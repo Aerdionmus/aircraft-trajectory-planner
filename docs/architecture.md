@@ -97,7 +97,22 @@ accumulating them during search. A*, Dijkstra and the direct-route baseline are
 therefore scored by identical code, and a search bug cannot flatter its own
 results.
 
+A segment that violates a hard constraint has no cost under this model, so it
+contributes nothing to the totals. The totals of an **infeasible** trajectory
+therefore cover only its feasible segments and are not comparable with a
+feasible trajectory's. `unpriced_segments` records how many were dropped and
+`comparable_cost` is infinite unless the whole trajectory is feasible; planner
+comparisons must use `comparable_cost`. This matters most for the direct-route
+baseline, which is infeasible by design in the restriction scenarios: reading
+its truncated `cost.total` as a comparable figure would understate it.
+
 ### `scenarios/`, `experiments/`, `cli.py`
+
+Non-blocked origin and destination cells do not imply a solvable instance --
+several restrictions can jointly wall off the destination -- so
+`scenarios/feasibility.py` floods the actual transition model to answer
+reachability, and `random_scenario` uses it to make its solvability claim true
+rather than assumed.
 
 A scenario is a JSON document with no code in it, so experiments are
 reproducible from a file under version control and a scenario can be reviewed
@@ -141,26 +156,59 @@ Two invariants the search depends on:
 
 1. every edge cost is finite and **non-negative** (descent fuel credits are
    clamped so this cannot be violated);
-2. `lower_bound_cost_per_nm()` never exceeds the true cost per NM of any
-   feasible transition.
+2. `speed_cost_lower_bound_per_nm()` never exceeds the time+fuel+risk cost per
+   NM of horizontal progress, once `constant_cost_offset()` is given back.
 
 Infeasible transitions are reported as infeasible, never as "very expensive".
 
 ## Admissibility argument
 
 Over any feasible transition the ground speed is at most
-`GS_max = TAS_max + |w|_max`, so one NM takes at least `1/GS_max` hours and burns
-at least `ff_min/GS_max` kg. Risk density is at least `risk_min` and soft
-penalties are non-negative. Hence
+`GS_max = TAS_max + |w|_max`, so one NM of **horizontal** travel takes at least
+`1/GS_max` hours, burns at least `ff_min/GS_max` kg and accrues at least
+`risk_min/GS_max` exposure. Soft penalties are non-negative. Writing
+`A = speed_cost_lower_bound_per_nm()` and `c_dist = distance_cost_per_nm`, for
+any trajectory
 
 ```
-cost/NM >= c_time/GS_max + c_fuel*ff_min/GS_max + c_dist + c_risk*risk_min/GS_max
+cost >= A * H_path + c_dist * D3_path - K
 ```
 
-Multiplying that constant by a straight-line distance gives an admissible,
-consistent heuristic. `tests/test_heuristics.py` verifies it the hard way: it
-runs Dijkstra from every state on small grids, across five environments, and
-asserts no declared-admissible heuristic overestimates.
+where `H_path` is horizontal path length, `D3_path` is 3D path length and `K` is
+`constant_cost_offset()`. Since `H_path >= H_straight` and
+`D3_path >= hypot(H_straight, V)`, the admissible heuristic is
+
+```
+h = max(0, A * H_straight + c_dist * hypot(H_straight, V) - K)
+```
+
+Two decompositions here are load-bearing, and both were got wrong in the first
+implementation of this milestone:
+
+- **The speed-derived term and the distance price are charged against different
+  lengths.** `A` bounds cost per NM of *horizontal* progress; `c_dist` prices 3D
+  length. Multiplying a combined per-NM figure by the 3D straight-line distance
+  charges time and fuel against vertical distance too, and vertical travel is
+  far slower than `GS_max`. That overestimates whenever the goal flight level is
+  constrained.
+- **`K` gives back the one cost term that is not proportional to distance:** the
+  fuel a descent is credited. Segment fuel is `ff * t + vertical_delta`, and
+  `vertical_delta < 0` on a descent, so a descending segment burns less than
+  `ff_min * t`. Because a climb costs at least as much fuel as the matching
+  descent refunds, no climb/descent cycle can generate fuel and the largest
+  credit any trajectory can accumulate is a single monotone descent across the
+  altitude span. `K` is zero unless fuel is priced *and* more than one flight
+  level exists, which is most configurations. (If a configuration gives descents
+  a larger credit than climbs cost, the fuel term is dropped from `A` entirely
+  rather than bounded.)
+
+Consistency follows because `h` is a non-negative combination of two metrics,
+less a constant, clamped at zero.
+
+`tests/test_heuristics.py` verifies this the hard way — Dijkstra from every state
+on small grids, across five environments, with and without a constrained goal
+level — and `tests/test_audit_regressions.py` pins the two specific
+counterexamples above.
 
 ## MVP scope
 
@@ -169,7 +217,7 @@ hard and soft restricted regions; weighted cost model; heuristic abstraction
 with four heuristics plus a weighting wrapper; A* and Dijkstra behind one
 implementation; path reconstruction; direct-route baseline; declarative
 scenarios; deterministic experiment runner with CSV/JSON output; ASCII
-rendering; 125 unit and integration tests.
+rendering; a unit and integration test suite covering each of the above.
 
 **Deferred**, with the reason:
 
@@ -192,12 +240,18 @@ rendering; 125 unit and integration tests.
   authoritative; the cell test is only a fast pre-filter. Relevant if you shrink
   a no-fly zone below the cell size.
 - **8-connectivity overestimates path length** by up to about 8% versus a true
-  straight line. This affects absolute distances, not the A*-versus-Dijkstra
+  straight line. (The ratio for a heading `t` off-axis is
+  `cos t + (sqrt(2) - 1) sin t`, maximised at `t = 22.5` degrees at
+  `sqrt(1 + (sqrt(2) - 1)^2)`, about 1.082.) This affects absolute distances, not the A*-versus-Dijkstra
   comparison, since both search the same graph.
 - **One mid-segment wind sample per edge** is `O(h^2)` accurate in cell size for
   smooth fields and degrades across a sharp jet-stream edge.
-- **Soft-restriction overlap is sampled**, not exact. Hard constraints are
-  exact, which is the side that matters.
+- **Soft-restriction overlap is sampled**, not exact. Hard constraints are exact
+  *horizontally* for all three region types (circle by point-to-segment distance,
+  polygon by containment plus edge intersection, corridor by segment-to-segment
+  distance) and conservative *vertically*, since a level-changing transition is
+  tested against the whole altitude band its endpoints span. So a hard
+  constraint can over-block a climbing transition but never under-block one.
 - **`ProximityRisk`** estimates distance-to-region by bisection with eight
   angular probes. It is the weakest numerical component in the package and the
   first thing to rewrite if proximity risk becomes load-bearing.

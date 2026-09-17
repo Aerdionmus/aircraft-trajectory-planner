@@ -119,15 +119,51 @@ def test_descent_credit_never_produces_a_negative_edge_cost():
     assert m.price(metrics).total >= 0.0
 
 
-def test_lower_bound_cost_per_nm_is_not_exceeded_by_any_transition():
+def test_speed_cost_lower_bound_is_not_exceeded_by_any_transition():
+    """The bound is per NM of *horizontal* progress and covers the time, fuel
+    and risk terms only; the distance price is charged against 3D length."""
     m = model(airspace={"wind": UniformWind(Vec2(60.0, 30.0))})
-    bound = m.lower_bound_cost_per_nm()
+    bound = m.speed_cost_lower_bound_per_nm()
     for dx, dy in SPEC.moves:
-        a = GridState(4, 4, 1)
-        b = GridState(4 + dx, 4 + dy, 1)
-        cost, metrics = m.transition_cost(a, b)
-        if metrics.feasible:
-            assert cost >= bound * metrics.ground_distance_nm - 1e-9
+        for dl in (0, 1, -1):
+            a = GridState(4, 4, 1)
+            b = GridState(4 + dx, 4 + dy, 1 + dl)
+            cost, metrics = m.transition_cost(a, b)
+            if metrics.feasible:
+                horizontal = math.hypot(dx, dy) * SPEC.cell_size_nm
+                priced = m.price(metrics)
+                # The bound holds only together with the constant offset that
+                # gives back the descent fuel credit, which is not proportional
+                # to distance.
+                assert priced.time + priced.fuel + priced.risk >= (
+                    bound * horizontal - m.constant_cost_offset() - 1e-9
+                )
+                assert cost >= bound * horizontal - m.constant_cost_offset() - 1e-9
+
+
+def test_descent_credit_alone_can_break_a_naive_per_nm_fuel_bound():
+    """Why :meth:`CostModel.constant_cost_offset` exists.
+
+    A descending transition burns less than ``ff_min * time``, so a bound built
+    purely from a per-NM fuel floor is not a lower bound on it.
+    """
+    m = model()
+    descending = m.evaluate(GridState(4, 4, 2), GridState(5, 4, 1))
+    assert descending.feasible
+    ff_min = MEDIUM_TWIN_JET.min_fuel_flow_over_levels_kg_per_h(SPEC.flight_levels)
+    assert descending.fuel_kg < ff_min * descending.time_h
+    assert m.constant_cost_offset() > 0.0
+
+
+def test_constant_offset_is_zero_in_the_common_configurations():
+    single_level = CostModel(
+        Airspace(spec=GridSpec(cells_x=4, cells_y=4, cell_size_nm=10.0, flight_levels=(300,))),
+        MEDIUM_TWIN_JET,
+        CostWeights(fuel_cost_per_kg=0.8),
+    )
+    assert single_level.constant_cost_offset() == 0.0
+    unpriced_fuel = model(weights=CostWeights(time_cost_per_hour=3000.0))
+    assert unpriced_fuel.constant_cost_offset() == 0.0
 
 
 def test_segment_metrics_accumulate():

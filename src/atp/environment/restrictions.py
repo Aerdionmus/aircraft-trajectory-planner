@@ -15,6 +15,15 @@ Two enforcement modes are supported and are a deliberate modelling choice:
 Vertical extent is a simple ``[lower_ft, upper_ft]`` band.  A transition that
 changes level is tested against the band spanned by its two endpoints, which is
 conservative (it can flag a climb that only clips the band's corner).
+
+Exactness, precisely
+--------------------
+The *horizontal* intersection tests (:meth:`intersects_segment_2d`) are exact
+for all three region types: circle by point-to-segment distance, polygon by
+containment plus edge intersection, corridor by segment-to-segment distance.
+The *vertical* test is the conservative band-overlap above, and the soft-penalty
+overlap fraction is sampled.  So a hard constraint can over-block a climbing
+transition but can never under-block one, which is the direction that matters.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ from ..core.geometry import (
     point_in_polygon,
     point_segment_distance,
     segment_circle_intersects,
+    segment_segment_distance,
     segments_intersect,
 )
 
@@ -70,9 +80,10 @@ class RestrictedRegion(ABC):
     ) -> float:
         """Approximate fraction of the segment lying inside the region.
 
-        Midpoint sampling with ``samples`` sub-intervals.  Only used for soft
-        penalties, where an O(1/samples) error is acceptable; hard constraints
-        always use the exact :meth:`intersects_segment` test.
+        Midpoint sampling with ``samples`` sub-intervals.  Used **only** for
+        soft penalties, where an O(1/samples) error is acceptable.  Hard
+        constraints never go through this method; they use the exact horizontal
+        test in :meth:`intersects_segment_2d`.
         """
         if samples <= 0 or not self.overlaps_altitude(alt_a_ft, alt_b_ft):
             return 0.0
@@ -148,16 +159,15 @@ class CorridorRestriction(RestrictedRegion):
         )
 
     def intersects_segment_2d(self, a_nm: Vec2, b_nm: Vec2) -> bool:
-        if self.contains_point(a_nm) or self.contains_point(b_nm):
-            return True
-        if segments_intersect(a_nm, b_nm, self.start_nm, self.end_nm):
-            return True
-        # Sample-based fallback for the capsule shoulder; exact capsule/segment
-        # distance is not needed at the resolution this model operates at.
-        for i in range(1, 16):
-            if self.contains_point(lerp(a_nm, b_nm, i / 16.0)):
-                return True
-        return False
+        # A capsule is the set of points within ``half_width_nm`` of the spine,
+        # so a segment meets it exactly when its minimum distance to the spine
+        # is within that width. Exact, with no sampling: an earlier
+        # 16-sample version missed segments that clipped the capsule between
+        # samples (see tests/test_audit_regressions.py).
+        return (
+            segment_segment_distance(a_nm, b_nm, self.start_nm, self.end_nm)
+            <= self.half_width_nm + 1e-9
+        )
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,31 @@ consistent
 A consistent heuristic is admissible; the converse does not hold.  The search
 supports re-opening closed nodes so that inadmissible/inconsistent heuristics
 still terminate with a well-defined (if suboptimal) answer.
+
+Lower-bound decomposition
+-------------------------
+For any feasible trajectory the total cost satisfies
+
+    cost >= A * H_path + c_dist * D3_path
+
+where ``H_path`` is the horizontal path length, ``D3_path`` the 3D path length,
+``A = speed_cost_lower_bound_per_nm()`` (time + fuel + risk per horizontal NM)
+and ``c_dist = distance_cost_per_nm``.  Since ``H_path >= H_straight`` and
+``D3_path >= hypot(H_straight, V)``, the admissible heuristic is
+
+    h = max(0, A * H_straight + c_dist * hypot(H_straight, V) - K)
+
+where ``K = constant_cost_offset()`` gives back the one non-distance-proportional
+term in the cost model: the fuel a descent is credited.  ``K`` is zero unless
+fuel is priced *and* more than one flight level exists.
+
+The two terms must be kept separate.  An earlier version multiplied the
+*combined* per-NM bound (including ``c_dist``) by the 3D straight-line distance,
+which charges the speed-derived cost against vertical distance as well.  That
+overestimates whenever the goal flight level is constrained: vertical travel is
+far slower than ``GS_max``, so ``A`` per vertical NM is not a lower bound on
+anything.  A worked counterexample is in
+``tests/test_audit_regressions.py::test_optimistic_heuristic_does_not_overestimate_on_level_constrained_diagonal``.
 """
 
 from __future__ import annotations
@@ -80,11 +105,12 @@ class _GoalRelative(Heuristic):
 class EuclideanDistanceHeuristic(_GoalRelative):
     """Straight-line distance priced only by ``distance_cost_per_nm``.
 
-    Admissible because the great-circle (here: straight-line) distance is a
-    lower bound on the flown distance and the other cost terms are non-negative.
-    Consistent because it is a metric scaled by a constant.  It is a very loose
-    bound whenever distance is not the dominant priced term, which is exactly
-    what the heuristic comparison experiment is meant to expose.
+    Admissible because the straight-line 3D distance is a lower bound on the
+    flown 3D distance -- which is exactly what ``distance_cost_per_nm`` prices --
+    and every other cost term is non-negative.  Consistent because it is a
+    metric scaled by a non-negative constant.  It is a very loose bound whenever
+    distance is not the dominant priced term, and is identically zero when
+    ``distance_cost_per_nm == 0``, in which case A* degenerates to Dijkstra.
     """
 
     name = "euclidean"
@@ -97,12 +123,15 @@ class EuclideanDistanceHeuristic(_GoalRelative):
 
 
 class OptimisticCostHeuristic(_GoalRelative):
-    """Full-cost lower bound: straight-line distance times the minimum possible
-    cost per NM (see :meth:`atp.planning.cost.CostModel.lower_bound_cost_per_nm`).
+    """Full-cost lower bound, decomposed as documented at the top of this module:
 
-    Admissible and consistent under the model's assumptions: the bound is a
-    constant multiple of a metric, and no feasible transition can be cheaper per
-    NM than the bound.  This is the default heuristic.
+        h = A * H_straight + c_dist * hypot(H_straight, V)
+
+    Admissible and consistent under the model's assumptions.  Admissible because
+    each term separately lower-bounds the corresponding term of the true cost;
+    consistent because it is a non-negative combination of two metrics and every
+    edge cost dominates the same combination over that edge.  This is the
+    default heuristic.
     """
 
     name = "optimistic-cost"
@@ -111,11 +140,19 @@ class OptimisticCostHeuristic(_GoalRelative):
 
     def __init__(self, problem: TrajectoryPlanningProblem) -> None:
         super().__init__(problem)
-        self.cost_per_nm = problem.cost_model.lower_bound_cost_per_nm()
+        self.speed_cost_per_nm = problem.cost_model.speed_cost_lower_bound_per_nm()
+        self.distance_cost_per_nm = problem.cost_model.weights.distance_cost_per_nm
+        self.offset = problem.cost_model.constant_cost_offset()
 
     def __call__(self, state: GridState) -> float:
-        d = math.hypot(self.horizontal_nm(state), self.vertical_nm(state))
-        return self.cost_per_nm * d
+        horizontal = self.horizontal_nm(state)
+        vertical = self.vertical_nm(state)
+        return max(
+            0.0,
+            self.speed_cost_per_nm * horizontal
+            + self.distance_cost_per_nm * math.hypot(horizontal, vertical)
+            - self.offset,
+        )
 
 
 class OctileHeuristic(_GoalRelative):
@@ -131,14 +168,16 @@ class OctileHeuristic(_GoalRelative):
 
     def __init__(self, problem: TrajectoryPlanningProblem) -> None:
         super().__init__(problem)
-        self.cost_per_nm = problem.cost_model.lower_bound_cost_per_nm()
+        self.speed_cost_per_nm = problem.cost_model.speed_cost_lower_bound_per_nm()
+        self.distance_cost_per_nm = problem.cost_model.weights.distance_cost_per_nm
+        self.offset = problem.cost_model.constant_cost_offset()
         self.cell = problem.airspace.spec.cell_size_nm
         connectivity = problem.airspace.spec.connectivity
         self.diagonal = connectivity >= 8
         self.admissible = connectivity <= 8
         self.consistent = connectivity <= 8
 
-    def __call__(self, state: GridState) -> float:
+    def _octile_nm(self, state: GridState) -> float:
         dx = abs(state.ix - self.problem.goal.state.ix)
         dy = abs(state.iy - self.problem.goal.state.iy)
         if self.diagonal:
@@ -146,15 +185,27 @@ class OctileHeuristic(_GoalRelative):
             cells = straight + math.sqrt(2.0) * min(dx, dy)
         else:
             cells = dx + dy
-        d = math.hypot(cells * self.cell, self.vertical_nm(state))
-        return self.cost_per_nm * d
+        return cells * self.cell
+
+    def __call__(self, state: GridState) -> float:
+        horizontal = self._octile_nm(state)
+        vertical = self.vertical_nm(state)
+        return max(
+            0.0,
+            self.speed_cost_per_nm * horizontal
+            + self.distance_cost_per_nm * math.hypot(horizontal, vertical)
+            - self.offset,
+        )
 
 
 class ManhattanHeuristic(_GoalRelative):
     """Included precisely because it is **inadmissible** for diagonal grids.
 
     Keeps the "effect of heuristic formulation" experiment honest: it expands
-    far fewer nodes and returns measurably worse paths.
+    fewer nodes and can return worse paths.  Note that on 4-connectivity it is
+    admissible *only* with respect to the speed-derived term; it deliberately
+    ignores the distance price, which keeps it a lower bound rather than adding
+    a second way to overestimate.
     """
 
     name = "manhattan"
@@ -163,7 +214,8 @@ class ManhattanHeuristic(_GoalRelative):
 
     def __init__(self, problem: TrajectoryPlanningProblem) -> None:
         super().__init__(problem)
-        self.cost_per_nm = problem.cost_model.lower_bound_cost_per_nm()
+        self.cost_per_nm = problem.cost_model.speed_cost_lower_bound_per_nm()
+        self.offset = problem.cost_model.constant_cost_offset()
         self.cell = problem.airspace.spec.cell_size_nm
         if problem.airspace.spec.connectivity == 4:
             self.admissible = True
@@ -172,7 +224,7 @@ class ManhattanHeuristic(_GoalRelative):
     def __call__(self, state: GridState) -> float:
         dx = abs(state.ix - self.problem.goal.state.ix)
         dy = abs(state.iy - self.problem.goal.state.iy)
-        return self.cost_per_nm * (dx + dy) * self.cell
+        return max(0.0, self.cost_per_nm * (dx + dy) * self.cell - self.offset)
 
 
 class WeightedHeuristic(Heuristic):

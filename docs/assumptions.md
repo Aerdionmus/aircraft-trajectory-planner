@@ -74,7 +74,12 @@ Every number in this repository is synthetic.
   that changes level is tested against the band spanned by its endpoints, which
   is conservative: it can flag a climb that only clips a corner of the band.
 - **Cell-centre blocking can miss a region smaller than one cell.** The
-  transition-level intersection test is the authoritative one.
+  transition-level intersection test is the authoritative one. That test is
+  exact horizontally for circles, polygons and corridors, and conservative
+  vertically: a level-changing transition is tested against the whole altitude
+  band its endpoints span, so it can be blocked by a region it would only clip.
+- **Soft-restriction overlap is sampled**, not exact, so a soft penalty carries
+  an O(1/samples) error. Hard constraints never use sampling.
 
 ## Search
 
@@ -89,6 +94,13 @@ Every number in this repository is synthetic.
   optimal here is optimal for a synthetic objective over a synthetic
   environment, and nothing more.
 
+## Costs of infeasible trajectories
+
+A segment violating a hard constraint has no defined cost, so an infeasible
+trajectory's distance, time, fuel and cost totals cover only its feasible
+segments. Those totals are **not** comparable with a feasible trajectory's;
+`comparable_cost` is infinite in that case and is what planner comparisons use.
+
 ## What "admissible" means here
 
 The heuristic is admissible **under the assumptions above** — specifically that
@@ -96,3 +108,13 @@ The heuristic is admissible **under the assumptions above** — specifically tha
 `RiskField.min_density()` a sound lower bound. If a custom field implements
 either incorrectly, A* silently loses its optimality guarantee. Any new field
 should be added to the bound-sampling test in `tests/test_wind.py`.
+
+Admissibility also depends on the aircraft model: the fuel lower bound assumes a
+climb costs at least as much fuel as the matching descent refunds. A performance
+set that violates this has its fuel term dropped from the bound rather than
+silently trusted. The derivation is in `docs/architecture.md`.
+
+Note also what "optimal" does *not* mean here. A* returns a least-cost path in
+the discretised state space under this cost model. It is not the optimal
+continuous trajectory, not optimal under any other objective, and not a claim
+about any real flight.

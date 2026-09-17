@@ -21,8 +21,10 @@ Invariants the search depends on
 --------------------------------
 1. Every edge cost is finite and **non-negative** (required by A*/Dijkstra).
    Descent fuel credits are clamped so this cannot be violated.
-2. ``lower_bound_cost_per_nm`` must never exceed the true cost per NM of any
-   feasible transition.  The admissible heuristic is built from it.
+2. ``speed_cost_lower_bound_per_nm`` must never exceed the time+fuel+risk cost
+   per NM of *horizontal* progress on any feasible transition.  The admissible
+   heuristic is built from it, together with the distance price applied to 3D
+   length.
 3. Infeasible transitions are reported as such, never as "very expensive".
 """
 
@@ -255,6 +257,8 @@ class CostModel:
         )
         exposure = mean_risk * time_h
 
+        # Hard restrictions were already rejected exactly in `evaluate`; this
+        # is the sampled soft-penalty overlap only.
         penalty = (
             self.airspace.restrictions.soft_penalty(
                 pa, pb, alt_a, alt_b, horizontal_nm, self.integration_samples
@@ -297,19 +301,31 @@ class CostModel:
         return self.price(metrics).total, metrics
 
     # -- heuristic support ---------------------------------------------------
-    def lower_bound_cost_per_nm(self) -> float:
-        """Lower bound on cost per NM of *horizontal* progress.
+    def speed_cost_lower_bound_per_nm(self) -> float:
+        """Lower bound on the *speed-derived* cost per NM of **horizontal**
+        progress, i.e. the time, fuel and risk terms only.
 
         Derivation.  Over any feasible transition the ground speed is at most
-        ``GS_max = TAS_max + |w|_max``, so 1 NM takes at least ``1/GS_max``
-        hours and burns at least ``ff_min / GS_max`` kg.  Risk density is at
-        least ``risk_min`` and soft penalties are non-negative.  Hence
+        ``GS_max = TAS_max + |w|_max``, so 1 NM of horizontal travel takes at
+        least ``1/GS_max`` hours and burns at least ``ff_min / GS_max`` kg, and
+        accrues at least ``risk_min / GS_max`` exposure.  Hence for any
+        trajectory
 
-            cost/NM >= c_time/GS_max + c_fuel*ff_min/GS_max
-                     + c_dist + c_risk*risk_min/GS_max
+            time/fuel/risk cost >= A * (horizontal path length)
 
-        Climb fuel and the 3D-length correction are dropped, both of which only
-        make the bound looser (still admissible).
+        with ``A`` as returned here.  Climb fuel and soft penalties are dropped;
+        both are non-negative, so the bound only gets looser.
+
+        The distance term is deliberately **not** included: it is priced against
+        3D length, not horizontal length, and folding the two together produced
+        an inadmissible heuristic whenever the goal flight level was
+        constrained.  See :mod:`atp.planning.heuristics`.
+
+        The fuel term is dropped entirely in the pathological case where a
+        descent credits more fuel per 1000 ft than a climb costs, because then
+        a climb/descent cycle would be fuel-positive and no per-NM fuel floor
+        exists.  Otherwise the (bounded) credit is handled by
+        :meth:`constant_cost_offset`.
         """
         spec = self.airspace.spec
         gs_max = max_possible_ground_speed_kt(
@@ -317,15 +333,53 @@ class CostModel:
         )
         if gs_max <= 0.0:
             return 0.0
-        ff_min = self.aircraft.min_fuel_flow_over_levels_kg_per_h(spec.flight_levels)
         risk_min = max(0.0, self.airspace.risk.min_density())
         w = self.weights
-        return (
-            w.time_cost_per_hour / gs_max
-            + w.fuel_cost_per_kg * ff_min / gs_max
-            + w.distance_cost_per_nm
-            + w.risk_cost_per_exposure * risk_min / gs_max
+        ff_min = (
+            self.aircraft.min_fuel_flow_over_levels_kg_per_h(spec.flight_levels)
+            if self._descent_credit_is_bounded()
+            else 0.0
         )
+        return (
+            w.time_cost_per_hour
+            + w.fuel_cost_per_kg * ff_min
+            + w.risk_cost_per_exposure * risk_min
+        ) / gs_max
+
+    def _descent_credit_is_bounded(self) -> bool:
+        """True when a climb costs at least as much fuel as the matching descent
+        refunds, so no climb/descent cycle can generate fuel."""
+        return (
+            self.aircraft.descent_fuel_credit_kg_per_1000ft
+            <= self.aircraft.climb_fuel_penalty_kg_per_1000ft + 1e-12
+        )
+
+    def constant_cost_offset(self) -> float:
+        """Constant that a distance-proportional lower bound must give back.
+
+        Segment fuel is ``ff * t + vertical_delta``, and ``vertical_delta`` is
+        negative on a descent.  That term is *not* proportional to distance, so
+        ``speed_cost_lower_bound_per_nm() * distance`` can exceed the true fuel
+        cost of a descending trajectory -- which is exactly the defect this
+        method exists to cancel.
+
+        Because a climb costs at least as much as the matching descent refunds,
+        the most fuel any trajectory can be credited is a single monotone
+        descent across the full altitude span:
+
+            credit_max = (alt_span_ft / 1000) * descent_fuel_credit_kg_per_1000ft
+
+        Zero whenever there is one flight level, fuel is unpriced, or the
+        aircraft has no descent credit -- i.e. in most configurations.
+        """
+        if not self._descent_credit_is_bounded():
+            return 0.0  # the fuel term was already dropped from the bound
+        spec = self.airspace.spec
+        if spec.num_levels < 2 or self.weights.fuel_cost_per_kg == 0.0:
+            return 0.0
+        span_ft = spec.altitude_ft(spec.num_levels - 1) - spec.altitude_ft(0)
+        credit_kg = (span_ft / 1000.0) * self.aircraft.descent_fuel_credit_kg_per_1000ft
+        return self.weights.fuel_cost_per_kg * max(0.0, credit_kg)
 
     def with_weights(self, weights: CostWeights) -> "CostModel":
         return CostModel(

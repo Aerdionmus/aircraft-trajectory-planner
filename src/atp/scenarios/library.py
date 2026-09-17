@@ -226,13 +226,22 @@ def random_scenario(
     num_hazards: int = 3,
     max_wind_kt: float = 80.0,
     weights: dict[str, float] | None = None,
+    ensure_reachable: bool = True,
 ) -> ScenarioSpec:
     """Reproducible random instance.
 
     Uses a private :class:`random.Random` seeded explicitly, never the global
     RNG, so generating a scenario cannot perturb anything else in the process.
-    Start and goal are placed in opposite corners and restrictions are rejected
-    if they would cover either, guaranteeing a feasible instance exists.
+
+    Origin and destination are placed in opposite corners and a restriction is
+    rejected if it would cover either.  That is **not** sufficient for
+    solvability: several restrictions can jointly wall off the destination.  So
+    when ``ensure_reachable`` is set the instance is verified with
+    :func:`atp.scenarios.feasibility.is_goal_reachable` and, if unreachable, the
+    most recently placed restriction is dropped and the check repeated.  The
+    removal order is deterministic, so a seed still maps to exactly one
+    scenario.  With ``ensure_reachable=False`` the generator makes no
+    solvability claim at all.
     """
     rng = random.Random(seed)
     extent = cells * cell_size_nm
@@ -288,19 +297,41 @@ def random_scenario(
         }
     ]
 
-    return ScenarioSpec(
-        name=f"random-{seed}",
-        description=f"Randomly generated instance, seed={seed}.",
-        grid=GridSpecDoc(
-            cells_x=cells,
-            cells_y=cells,
-            cell_size_nm=cell_size_nm,
-            flight_levels=[300],
-        ),
-        start=start,
-        goal=goal,
-        wind=wind,
-        restrictions=restrictions,
-        risk=hazards,
-        weights=dict(weights or RISK_WEIGHTS),
-    )
+    def make(regions: list[dict[str, Any]]) -> ScenarioSpec:
+        return ScenarioSpec(
+            name=f"random-{seed}",
+            description=f"Randomly generated instance, seed={seed}.",
+            grid=GridSpecDoc(
+                cells_x=cells,
+                cells_y=cells,
+                cell_size_nm=cell_size_nm,
+                flight_levels=[300],
+            ),
+            start=start,
+            goal=goal,
+            wind=wind,
+            restrictions=regions,
+            risk=hazards,
+            weights=dict(weights or RISK_WEIGHTS),
+        )
+
+    if not ensure_reachable:
+        return make(restrictions)
+
+    # Local imports: the feasibility check needs the planning stack, which must
+    # not become an import-time dependency of the scenario library.
+    from .feasibility import is_goal_reachable
+    from .spec import build_scenario
+
+    while True:
+        spec = make(restrictions)
+        if is_goal_reachable(build_scenario(spec).problem):
+            return spec
+        if not restrictions:
+            # No restriction left to remove: the airspace itself is unflyable
+            # for this aircraft, which is a configuration error, not bad luck.
+            raise ValueError(
+                f"random scenario seed={seed} is unreachable with no "
+                "restrictions; check grid, aircraft and wind settings"
+            )
+        restrictions.pop()

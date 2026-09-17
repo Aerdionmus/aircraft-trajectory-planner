@@ -54,7 +54,7 @@ WEIGHTS = CostWeights(
 )
 
 
-def exact_cost_to_go(problem) -> dict[GridState, float]:
+def exact_cost_to_go(problem) -> dict[GridState, float]:  # noqa: C901
     """Dijkstra from every state, by running it backwards from the goal via a
     full forward sweep. The grid is small, so an O(V) repeat is acceptable."""
     costs: dict[GridState, float] = {}
@@ -72,6 +72,7 @@ def exact_cost_to_go(problem) -> dict[GridState, float]:
             weights=problem.cost_model.weights,
             start=state,
             goal=problem.goal.state,
+            match_level=problem.goal.match_level,
         )
         result = dijkstra(sub)
         if result.solved:
@@ -99,6 +100,25 @@ def test_astar_with_admissible_heuristic_matches_dijkstra_cost(env_name, factory
     result = astar(problem, factory(problem))
     assert reference.solved and result.solved
     assert result.cost == pytest.approx(reference.cost, rel=1e-9)
+
+
+@pytest.mark.parametrize("factory", ADMISSIBLE, ids=[f.__name__ for f in ADMISSIBLE])
+def test_admissibility_holds_when_the_goal_level_is_constrained(factory):
+    """The original suite only exercised ``match_level=False``, which is what
+    allowed an inadmissible vertical term to go unnoticed."""
+    problem = make_problem(
+        cells=6,
+        cell_size_nm=20.0,
+        levels=(280, 300, 320),
+        weights=WEIGHTS,
+        start=GridState(0, 0, 0),
+        goal=GridState(5, 5, 2),
+        match_level=True,
+    )
+    heuristic = factory(problem)
+    assert heuristic.admissible
+    for state, true_cost in exact_cost_to_go(problem).items():
+        assert heuristic(state) <= true_cost + 1e-6
 
 
 def test_zero_heuristic_expands_at_least_as_much_as_a_guided_one():

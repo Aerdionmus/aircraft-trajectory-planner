@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 
 import pytest
 
@@ -45,8 +46,23 @@ def test_direct_baseline_violates_constraints_where_the_planner_does_not():
     assert not baseline.evaluation.feasible
     assert baseline.evaluation.hard_violations
     assert planned.evaluation.feasible
-    # Compliance costs distance: the legal route is longer.
-    assert planned.evaluation.distance_nm > baseline.evaluation.distance_nm
+    # The baseline's totals exclude its violating segments, so they cannot be
+    # compared against the planner's directly. What is comparable: the planner
+    # produces a usable cost and the baseline does not.
+    assert baseline.evaluation.comparable_cost == float("inf")
+    assert planned.evaluation.comparable_cost < float("inf")
+    # Compliance costs distance. Measure it on the geometry of the full direct
+    # route rather than on its partially-priced evaluation.
+    from atp.core.units import ft_to_nm
+
+    direct_nm = sum(
+        math.hypot(
+            (b.ix - a.ix) * built.airspace.spec.cell_size_nm,
+            (b.iy - a.iy) * built.airspace.spec.cell_size_nm,
+        )
+        for a, b in zip(baseline.path, baseline.path[1:])
+    )
+    assert planned.evaluation.distance_nm > direct_nm
 
 
 # -- determinism ------------------------------------------------------------

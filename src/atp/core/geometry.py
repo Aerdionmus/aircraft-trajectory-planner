@@ -146,3 +146,21 @@ def point_in_polygon(p: Vec2, vertices: tuple[Vec2, ...]) -> bool:
 
 def segment_circle_intersects(a: Vec2, b: Vec2, centre: Vec2, radius_nm: float) -> bool:
     return point_segment_distance(centre, a, b) <= radius_nm + 1e-9
+
+
+def segment_segment_distance(p1: Vec2, p2: Vec2, q1: Vec2, q2: Vec2) -> float:
+    """Exact minimum distance between two closed segments.
+
+    If the segments intersect the distance is zero; otherwise the minimum is
+    attained at an endpoint of one segment against the other, so the four
+    point-to-segment distances are exhaustive.  This is what makes an exact
+    capsule (corridor) intersection test possible.
+    """
+    if segments_intersect(p1, p2, q1, q2):
+        return 0.0
+    return min(
+        point_segment_distance(p1, q1, q2),
+        point_segment_distance(p2, q1, q2),
+        point_segment_distance(q1, p1, p2),
+        point_segment_distance(q2, p1, p2),
+    )

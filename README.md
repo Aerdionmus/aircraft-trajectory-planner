@@ -194,12 +194,23 @@ model, the search itself (on hand-built graphs with no aerospace model
 involved), heuristic admissibility against a brute-force optimum, end-to-end
 planning, scenario validation, determinism and the CLI.
 
+`tests/test_audit_regressions.py` pins the specific defects found in the
+Milestone 1 audit: the two heuristic-admissibility failures (vertical distance
+charged at the speed-derived rate, and descent fuel credits), the corridor
+intersection test that was sampled rather than exact, the partially-priced
+totals of an infeasible trajectory, and scenario reachability.
+
 Two properties are asserted rather than claimed:
 
 - **Admissibility.** Dijkstra is run from every state of small grids across five
   environments; no heuristic declared admissible is allowed to overestimate.
 - **Determinism.** A repeated experiment matrix must reproduce byte-for-byte
   apart from wall-clock columns.
+
+Reported costs use `comparable_cost`, which is infinite for a trajectory that
+violates a hard constraint, because such a trajectory's priced totals cover only
+its feasible segments. The direct-route baseline is infeasible by design in the
+restriction scenarios, so it is a compliance comparison there, not a cost one.
 
 ## Repository layout
 

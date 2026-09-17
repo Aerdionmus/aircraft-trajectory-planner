@@ -81,7 +81,7 @@ def run_baseline(built: BuiltScenario) -> PlanReport:
         planner=baseline.name,
         heuristic="none",
         status=status,
-        search_cost=baseline.evaluation.cost.total,
+        search_cost=baseline.evaluation.comparable_cost,
         evaluation=baseline.evaluation,
         statistics=SearchStatistics(),
         heuristic_info={"name": "none", "admissible": True, "consistent": True},
@@ -201,16 +201,28 @@ def write_results(
 
 def summarise(reports: Sequence[PlanReport]) -> str:
     """Fixed-width text table for the terminal."""
+    # `cost` is comparable_cost: inf for an infeasible trajectory, whose
+    # priced total would otherwise cover only its feasible segments.
     header = (
         f"{'scenario':<20} {'planner':<12} {'heuristic':<20} {'status':<20} "
         f"{'cost':>12} {'dist_nm':>9} {'time_min':>9} {'fuel_kg':>9} {'expand':>8}"
     )
     lines = [header, "-" * len(header)]
+    partial = False
     for r in reports:
         e = r.evaluation
+        mark = ""
+        if e.unpriced_segments:
+            partial = True
+            mark = f"  (*{e.unpriced_segments} segment(s) unpriced)"
         lines.append(
             f"{r.scenario:<20} {r.planner:<12} {r.heuristic:<20} {r.status:<20} "
-            f"{e.cost.total:>12.1f} {e.distance_nm:>9.1f} {e.time_min:>9.1f} "
-            f"{e.fuel_kg:>9.1f} {r.statistics.expansions:>8d}"
+            f"{e.comparable_cost:>12.1f} {e.distance_nm:>9.1f} {e.time_min:>9.1f} "
+            f"{e.fuel_kg:>9.1f} {r.statistics.expansions:>8d}{mark}"
+        )
+    if partial:
+        lines.append(
+            "(*) the trajectory violates a hard constraint; its distance, time "
+            "and fuel cover only the feasible segments and are not comparable."
         )
     return "\n".join(lines)
