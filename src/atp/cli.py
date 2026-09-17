@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .experiments.runner import (
@@ -19,6 +20,7 @@ from .experiments.runner import (
     summarise,
     write_results,
 )
+from .planning.cost import TURN_MODELS
 from .scenarios.library import SCENARIO_LIBRARY, get_scenario, random_scenario
 from .scenarios.spec import ScenarioSpec, build_scenario
 from .visualization.ascii_map import render_ascii
@@ -26,10 +28,28 @@ from .visualization.ascii_map import render_ascii
 
 def _load_scenario(args: argparse.Namespace) -> ScenarioSpec:
     if args.scenario_file:
-        return ScenarioSpec.load(args.scenario_file)
-    if args.seed is not None:
-        return random_scenario(args.seed)
-    return get_scenario(args.scenario)
+        spec = ScenarioSpec.load(args.scenario_file)
+    elif args.seed is not None:
+        spec = random_scenario(args.seed)
+    else:
+        spec = get_scenario(args.scenario)
+    return _apply_overrides(spec, args)
+
+
+def _apply_overrides(spec: ScenarioSpec, args: argparse.Namespace) -> ScenarioSpec:
+    """Apply the Milestone 2 command-line overrides, if any were given."""
+    overrides: dict[str, object] = {}
+    if getattr(args, "turn_model", None) is not None:
+        overrides["turn_model"] = args.turn_model
+    if getattr(args, "bank_deg", None) is not None:
+        overrides["max_bank_deg"] = args.bank_deg
+    if getattr(args, "max_turn_deg", None) is not None:
+        overrides["max_turn_deg"] = args.max_turn_deg
+    if getattr(args, "start_heading", None) is not None:
+        overrides["start_heading_deg"] = args.start_heading
+    if getattr(args, "goal_heading", None) is not None:
+        overrides["goal_heading_deg"] = args.goal_heading
+    return replace(spec, **overrides) if overrides else spec
 
 
 def _add_scenario_args(parser: argparse.ArgumentParser) -> None:
@@ -43,6 +63,23 @@ def _add_scenario_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--seed", type=int, help="generate a reproducible random scenario instead"
+    )
+    parser.add_argument(
+        "--turn-model",
+        choices=list(TURN_MODELS),
+        help="override the scenario's turn model ('none' is Milestone 1 behaviour)",
+    )
+    parser.add_argument(
+        "--bank-deg", type=float, help="override the aircraft's maximum bank angle"
+    )
+    parser.add_argument(
+        "--max-turn-deg", type=float, help="hard cap on the heading change per corner"
+    )
+    parser.add_argument(
+        "--start-heading", type=float, help="departure true bearing (0 = north)"
+    )
+    parser.add_argument(
+        "--goal-heading", type=float, help="required arrival true bearing"
     )
 
 
@@ -76,6 +113,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
     reports = [report]
     if args.with_baseline:
         reports.insert(0, run_baseline(build_scenario(spec)))
+    if args.with_analytic_baseline:
+        reports.insert(0, run_baseline(build_scenario(spec), analytic=True))
     print(summarise(reports))
     if args.render:
         print()
@@ -148,6 +187,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_plan.add_argument("--max-expansions", type=int)
     p_plan.add_argument("--time-limit", type=float)
     p_plan.add_argument("--with-baseline", action="store_true")
+    p_plan.add_argument(
+        "--with-analytic-baseline",
+        action="store_true",
+        help="also report the corner-free straight-line reference",
+    )
     p_plan.add_argument("--render", action="store_true", help="ASCII map of the route")
     p_plan.add_argument("--json", action="store_true")
     p_plan.set_defaults(func=cmd_plan)

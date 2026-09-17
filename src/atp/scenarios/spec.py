@@ -10,12 +10,27 @@ project needs:
 
 Unknown keys are rejected rather than ignored, so a typo in a config fails
 loudly instead of silently planning in the wrong airspace.
+
+Schema versions
+---------------
+Version 1 is the Milestone 1 document.  It is still accepted verbatim and is
+**migrated by forcing** ``turn_model="none"``, which reproduces Milestone 1
+behaviour exactly -- a document written before turn dynamics existed cannot be
+assumed to have been designed for them (several Milestone 1 scenarios use cell
+sizes too small for the aircraft to turn at all; see ``docs/turn_model.md``).
+
+A document with no ``schema_version`` at all is treated as version 1, for the
+same reason.
+
+Version 2 adds ``turn_model``, ``max_bank_deg``, ``max_turn_deg``,
+``start_heading_deg`` and ``goal_heading_deg``.  A version 2 document that does
+not name a turn model gets ``"gate+cost"``.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +59,14 @@ from ..environment.wind import (
     WindField,
     ZeroWind,
 )
-from ..planning.cost import CostModel, CostWeights
+from ..planning.cost import TURN_MODELS, CostModel, CostWeights
 from ..planning.problem import GoalSpec, TrajectoryPlanningProblem
+from ..planning.state import TurnTable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+#: Turn model applied to a version 2 document that does not name one.
+DEFAULT_V2_TURN_MODEL = "gate+cost"
 
 
 class ScenarioError(ValueError):
@@ -101,6 +120,15 @@ class ScenarioSpec:
     allow_level_change_with_move: bool = True
     allow_pure_level_change: bool = False
     integration_samples: int = 6
+    #: Milestone 2.  Defaults to ``"none"`` so that a scenario constructed in
+    #: Python behaves exactly as it did in Milestone 1 unless it opts in.
+    turn_model: str = "none"
+    #: Overrides the aircraft's own bank limit when set.
+    max_bank_deg: float | None = None
+    max_turn_deg: float = 180.0
+    #: True bearings (0 = north, clockwise), snapped to the nearest grid move.
+    start_heading_deg: float | None = None
+    goal_heading_deg: float | None = None
     description: str = ""
     schema_version: int = SCHEMA_VERSION
 
@@ -127,15 +155,34 @@ class ScenarioSpec:
             "allow_level_change_with_move",
             "allow_pure_level_change",
             "integration_samples",
+            "turn_model",
+            "max_bank_deg",
+            "max_turn_deg",
+            "start_heading_deg",
+            "goal_heading_deg",
             "description",
             "schema_version",
         }
         _reject_unknown(doc, allowed, "scenario")
-        version = doc.get("schema_version", SCHEMA_VERSION)
-        if version != SCHEMA_VERSION:
+        # An absent version means version 1: a document written without a
+        # version predates Milestone 2, and silently switching turn dynamics on
+        # underneath it would be the wrong default.
+        version = doc.get("schema_version", 1)
+        if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise ScenarioError(
                 f"scenario schema version {version} is not supported "
-                f"(expected {SCHEMA_VERSION})"
+                f"(expected one of {list(SUPPORTED_SCHEMA_VERSIONS)})"
+            )
+        if version == 1:
+            # Migration: a Milestone 1 document predates turn dynamics and is
+            # not assumed to be flyable under them.
+            turn_model = "none"
+        else:
+            turn_model = doc.get("turn_model", DEFAULT_V2_TURN_MODEL)
+        if turn_model not in TURN_MODELS:
+            raise ScenarioError(
+                f"scenario: unknown turn_model {turn_model!r}; "
+                f"available: {list(TURN_MODELS)}"
             )
         grid_doc = _require(doc, "grid", "scenario")
         _reject_unknown(
@@ -164,6 +211,21 @@ class ScenarioSpec:
             allow_level_change_with_move=doc.get("allow_level_change_with_move", True),
             allow_pure_level_change=doc.get("allow_pure_level_change", False),
             integration_samples=doc.get("integration_samples", 6),
+            turn_model=turn_model,
+            max_bank_deg=(
+                None if doc.get("max_bank_deg") is None else float(doc["max_bank_deg"])
+            ),
+            max_turn_deg=float(doc.get("max_turn_deg", 180.0)),
+            start_heading_deg=(
+                None
+                if doc.get("start_heading_deg") is None
+                else float(doc["start_heading_deg"])
+            ),
+            goal_heading_deg=(
+                None
+                if doc.get("goal_heading_deg") is None
+                else float(doc["goal_heading_deg"])
+            ),
             description=doc.get("description", ""),
         )
 
@@ -356,6 +418,14 @@ def _state(triple: list[int], context: str) -> GridState:
     return GridState(int(triple[0]), int(triple[1]), int(triple[2]))
 
 
+def _heading_index(
+    bearing_deg: float | None, table: TurnTable
+) -> int | None:
+    if bearing_deg is None:
+        return None
+    return table.nearest_index_for_bearing(bearing_deg)
+
+
 def build_scenario(spec: ScenarioSpec) -> BuiltScenario:
     grid = spec.grid.build()
     restrictions = build_restrictions(spec.restrictions)
@@ -367,18 +437,32 @@ def build_scenario(spec: ScenarioSpec) -> BuiltScenario:
         name=spec.name,
     )
     aircraft = build_aircraft(spec.aircraft)
+    if spec.max_bank_deg is not None:
+        if not 0.0 < spec.max_bank_deg < 90.0:
+            raise ScenarioError("scenario.max_bank_deg must lie in (0, 90)")
+        aircraft = replace(aircraft, max_bank_deg=float(spec.max_bank_deg))
+    if not 0.0 < spec.max_turn_deg <= 180.0:
+        raise ScenarioError("scenario.max_turn_deg must lie in (0, 180]")
     cost_model = CostModel(
         airspace,
         aircraft,
         build_weights(spec.weights),
         integration_samples=spec.integration_samples,
+        turn_model=spec.turn_model,
+        max_turn_deg=spec.max_turn_deg,
     )
+    table = TurnTable(grid.moves, grid.cell_size_nm)
     problem = TrajectoryPlanningProblem(
         airspace,
         cost_model,
         start=_state(spec.start, "scenario.start"),
-        goal=GoalSpec(_state(spec.goal, "scenario.goal"), spec.match_goal_level),
+        goal=GoalSpec(
+            _state(spec.goal, "scenario.goal"),
+            spec.match_goal_level,
+            _heading_index(spec.goal_heading_deg, table),
+        ),
         allow_level_change_with_move=spec.allow_level_change_with_move,
         allow_pure_level_change=spec.allow_pure_level_change,
+        start_heading_index=_heading_index(spec.start_heading_deg, table),
     )
     return BuiltScenario(spec, airspace, aircraft, cost_model, problem)

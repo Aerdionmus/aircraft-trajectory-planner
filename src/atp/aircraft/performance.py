@@ -13,8 +13,10 @@ buried in the code):
 * Climb and descent are charged a fixed fuel delta per 1000 ft on top of the
   cruise burn for the time spent, and are limited by a constant maximum
   vertical rate.  No thrust/drag integration.
-* No turn dynamics: heading is not part of the state, so turn radius, bank
-  limits and the associated path lengthening are not modelled.
+* Turn dynamics are limited to a constant maximum bank angle driving a
+  coordinated level turn (see :mod:`atp.aircraft.turn`).  There is no roll-in
+  or roll-out time, no bank scheduling, no load-factor limit beyond the bank
+  limit, and no turn/climb coupling.
 
 This is adequate for comparing *search strategies*, which is what the project
 is about.  It is not adequate for predicting fuel burn of a real aircraft.  If
@@ -28,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core.units import FT_PER_FLIGHT_LEVEL
+from .turn import turn_radius_nm, turn_rate_rad_per_h
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,13 @@ class AircraftPerformance:
     climb_fuel_penalty_kg_per_1000ft: float = 22.0
     descent_fuel_credit_kg_per_1000ft: float = 6.0
     service_ceiling_ft: float = 41000.0
+    #: Maximum bank angle for a coordinated level turn, in degrees.  Purely a
+    #: representative operating limit, not a certified structural one.
+    max_bank_deg: float = 25.0
+    #: Multiplier on the cruise fuel flow while turning, standing in for the
+    #: extra induced drag at load factor ``1 / cos(bank)``.  Must be >= 1 so a
+    #: turn can never be cheaper in fuel than straight flight.
+    turn_fuel_factor: float = 1.0
 
     def __post_init__(self) -> None:
         if self.cruise_tas_kt <= 0:
@@ -53,6 +63,10 @@ class AircraftPerformance:
             raise ValueError("cruise_fuel_flow_kg_per_h must be non-negative")
         if self.max_climb_rate_fpm <= 0 or self.max_descent_rate_fpm <= 0:
             raise ValueError("vertical rate limits must be positive")
+        if not 0.0 < self.max_bank_deg < 90.0:
+            raise ValueError("max_bank_deg must lie strictly between 0 and 90")
+        if self.turn_fuel_factor < 1.0:
+            raise ValueError("turn_fuel_factor must be >= 1")
 
     # -- speed ---------------------------------------------------------------
     def tas_kt(self, altitude_ft: float) -> float:
@@ -103,6 +117,15 @@ class AircraftPerformance:
         return (
             self.max_climb_rate_fpm if delta_altitude_ft >= 0 else self.max_descent_rate_fpm
         )
+
+    # -- turn capability -----------------------------------------------------
+    def turn_radius_nm(self, altitude_ft: float) -> float:
+        """Air-mass turn radius [NM] at the commanded TAS for this altitude."""
+        return turn_radius_nm(self.tas_kt(altitude_ft), self.max_bank_deg)
+
+    def turn_rate_rad_per_h(self, altitude_ft: float) -> float:
+        """Turn rate [rad/h] at the commanded TAS for this altitude."""
+        return turn_rate_rad_per_h(self.tas_kt(altitude_ft), self.max_bank_deg)
 
     def can_operate_at(self, altitude_ft: float) -> bool:
         return altitude_ft <= self.service_ceiling_ft

@@ -21,10 +21,11 @@ import csv
 import json
 import platform
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from ..baselines.analytic import plan_analytic_direct
 from ..baselines.direct import plan_direct_route
 from ..evaluation.metrics import PlanReport, evaluate_trajectory
 from ..planning.astar import SearchStatistics, SearchStatus, astar
@@ -53,12 +54,15 @@ def run_plan(
         time_limit_s=time_limit_s,
         reopen_closed=not h.consistent,
     )
-    evaluation = evaluate_trajectory(built.cost_model, list(result.path))
+    evaluation = evaluate_trajectory(
+        built.cost_model, list(result.path), start_move=built.problem.start_move
+    )
     planner = "dijkstra" if heuristic == "zero" and weight == 1.0 else "astar"
     return PlanReport(
         scenario=built.spec.name,
         planner=planner,
         heuristic=h.name,
+        turn_model=built.spec.turn_model,
         status=result.status.value,
         search_cost=result.cost,
         evaluation=evaluation,
@@ -68,9 +72,22 @@ def run_plan(
     )
 
 
-def run_baseline(built: BuiltScenario) -> PlanReport:
-    """Direct-route baseline, scored with the same cost model."""
-    baseline = plan_direct_route(built.problem)
+def run_baseline(built: BuiltScenario, *, analytic: bool = False) -> PlanReport:
+    """A reference trajectory, scored with the same cost model as any plan.
+
+    ``analytic=True`` selects the corner-free straight-line reference instead of
+    the Bresenham staircase; see :mod:`atp.baselines.analytic` for why both are
+    reported once turns are modelled.
+    """
+    baseline = (
+        plan_analytic_direct(built.problem)
+        if analytic
+        else plan_direct_route(built.problem)
+    )
+    if not analytic:
+        baseline.evaluation = evaluate_trajectory(
+            built.cost_model, baseline.path, start_move=built.problem.start_move
+        )
     status = (
         SearchStatus.SOLVED.value
         if baseline.evaluation.feasible
@@ -80,6 +97,7 @@ def run_baseline(built: BuiltScenario) -> PlanReport:
         scenario=built.spec.name,
         planner=baseline.name,
         heuristic="none",
+        turn_model=built.spec.turn_model,
         status=status,
         search_cost=baseline.evaluation.comparable_cost,
         evaluation=baseline.evaluation,
@@ -99,8 +117,16 @@ class ExperimentSpec:
     heuristics: list[str] = field(default_factory=lambda: ["zero", "optimistic"])
     weights: list[float] = field(default_factory=lambda: [1.0])
     include_baseline: bool = True
+    #: Also report the corner-free straight-line reference (Milestone 2).
+    include_analytic_baseline: bool = False
     max_expansions: int | None = None
     time_limit_s: float | None = None
+    #: Milestone 2 ablation axes.  An empty list means "leave the scenario's own
+    #: value alone", so an unmodified Milestone 1 experiment document produces
+    #: an unmodified Milestone 1 matrix.
+    turn_models: list[str] = field(default_factory=list)
+    bank_angles_deg: list[float] = field(default_factory=list)
+    connectivities: list[int] = field(default_factory=list)
 
     @staticmethod
     def from_dict(doc: dict) -> "ExperimentSpec":
@@ -123,28 +149,62 @@ def _iter_specs(spec: ExperimentSpec) -> Iterable[ScenarioSpec]:
         yield random_scenario(seed)
 
 
+def _variants(spec: ExperimentSpec, base: ScenarioSpec) -> Iterable[ScenarioSpec]:
+    """Expand a scenario over the Milestone 2 ablation axes.
+
+    Every axis defaults to empty, which yields ``base`` unchanged exactly once.
+    """
+    turn_models = spec.turn_models or [base.turn_model]
+    banks: list[float | None] = list(spec.bank_angles_deg) or [base.max_bank_deg]
+    connectivities = spec.connectivities or [base.grid.connectivity]
+    for turn_model in turn_models:
+        for bank in banks:
+            for connectivity in connectivities:
+                grid = replace(base.grid, connectivity=connectivity)
+                suffix = []
+                if len(turn_models) > 1:
+                    suffix.append(turn_model)
+                if len(banks) > 1:
+                    suffix.append(f"bank{bank:g}")
+                if len(connectivities) > 1:
+                    suffix.append(f"c{connectivity}")
+                name = base.name + ("[" + ",".join(suffix) + "]" if suffix else "")
+                yield replace(
+                    base,
+                    name=name,
+                    grid=grid,
+                    turn_model=turn_model,
+                    max_bank_deg=bank,
+                )
+
+
 def run_matrix(spec: ExperimentSpec) -> list[PlanReport]:
     reports: list[PlanReport] = []
-    for scenario_spec in _iter_specs(spec):
-        built = build_scenario(scenario_spec)
-        if spec.include_baseline:
-            reports.append(run_baseline(built))
-        for heuristic in spec.heuristics:
-            for weight in spec.weights:
-                if heuristic == "zero" and weight != 1.0:
-                    continue  # weighting a zero heuristic is a no-op
-                # Rebuild so that the blocked-cell cache is not shared between
-                # runs and timing comparisons stay fair.
-                fresh = build_scenario(scenario_spec)
+    for base_spec in _iter_specs(spec):
+        for scenario_spec in _variants(spec, base_spec):
+            built = build_scenario(scenario_spec)
+            if spec.include_baseline:
+                reports.append(run_baseline(built))
+            if spec.include_analytic_baseline:
                 reports.append(
-                    run_plan(
-                        fresh,
-                        heuristic=heuristic,
-                        weight=weight,
-                        max_expansions=spec.max_expansions,
-                        time_limit_s=spec.time_limit_s,
-                    )
+                    run_baseline(build_scenario(scenario_spec), analytic=True)
                 )
+            for heuristic in spec.heuristics:
+                for weight in spec.weights:
+                    if heuristic == "zero" and weight != 1.0:
+                        continue  # weighting a zero heuristic is a no-op
+                    # Rebuild so that the blocked-cell cache is not shared
+                    # between runs and timing comparisons stay fair.
+                    fresh = build_scenario(scenario_spec)
+                    reports.append(
+                        run_plan(
+                            fresh,
+                            heuristic=heuristic,
+                            weight=weight,
+                            max_expansions=spec.max_expansions,
+                            time_limit_s=spec.time_limit_s,
+                        )
+                    )
     return reports
 
 
@@ -204,8 +264,9 @@ def summarise(reports: Sequence[PlanReport]) -> str:
     # `cost` is comparable_cost: inf for an infeasible trajectory, whose
     # priced total would otherwise cover only its feasible segments.
     header = (
-        f"{'scenario':<20} {'planner':<12} {'heuristic':<20} {'status':<20} "
-        f"{'cost':>12} {'dist_nm':>9} {'time_min':>9} {'fuel_kg':>9} {'expand':>8}"
+        f"{'scenario':<24} {'planner':<15} {'heuristic':<20} {'turn':<9} "
+        f"{'status':<20} {'cost':>12} {'dist_nm':>9} {'time_min':>9} "
+        f"{'fuel_kg':>9} {'turns':>6} {'hdg_deg':>8} {'expand':>8}"
     )
     lines = [header, "-" * len(header)]
     partial = False
@@ -216,9 +277,11 @@ def summarise(reports: Sequence[PlanReport]) -> str:
             partial = True
             mark = f"  (*{e.unpriced_segments} segment(s) unpriced)"
         lines.append(
-            f"{r.scenario:<20} {r.planner:<12} {r.heuristic:<20} {r.status:<20} "
+            f"{r.scenario:<24} {r.planner:<15} {r.heuristic:<20} "
+            f"{r.turn_model:<9} {r.status:<20} "
             f"{e.comparable_cost:>12.1f} {e.distance_nm:>9.1f} {e.time_min:>9.1f} "
-            f"{e.fuel_kg:>9.1f} {r.statistics.expansions:>8d}{mark}"
+            f"{e.fuel_kg:>9.1f} {e.num_turns:>6d} "
+            f"{e.total_heading_change_deg:>8.1f} {r.statistics.expansions:>8d}{mark}"
         )
     if partial:
         lines.append(

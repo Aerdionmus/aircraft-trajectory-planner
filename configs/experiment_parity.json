@@ -1,0 +1,17 @@
+{
+  "name": "milestone1_parity",
+  "scenarios": [
+    "empty-cruise",
+    "two-no-fly",
+    "jetstream",
+    "layered-jetstream",
+    "convective-risk",
+    "corridor-charge",
+    "dense-restrictions"
+  ],
+  "random_seeds": [101],
+  "heuristics": ["zero", "euclidean", "optimistic", "octile", "manhattan"],
+  "weights": [1.0, 2.5],
+  "include_baseline": true,
+  "max_expansions": 400000
+}

@@ -152,12 +152,18 @@ This generalises an airline Cost Index. Setting all prices but one to zero
 recovers the single-objective planners, which is how the experiment matrix
 isolates effects.
 
-Two invariants the search depends on:
+Three invariants the search depends on:
 
 1. every edge cost is finite and **non-negative** (descent fuel credits are
    clamped so this cannot be violated);
 2. `speed_cost_lower_bound_per_nm()` never exceeds the time+fuel+risk cost per
    NM of horizontal progress, once `constant_cost_offset()` is given back.
+3. **Monotone refinement (Milestone 2).** No Milestone 2 refinement may lower the
+   cost of a transition relative to its Milestone 1 value. Turn modelling may add
+   cost or remove edges; it never adds or subtracts distance, and the geometric
+   shortening a fly-by produces is measured but never credited. This is what the
+   inherited-admissibility argument rests on, and
+   `tests/test_turn_cost.py` checks it edge by edge.
 
 Infeasible transitions are reported as infeasible, never as "very expensive".
 
@@ -210,6 +216,28 @@ on small grids, across five environments, with and without a constrained goal
 level — and `tests/test_audit_regressions.py` pins the two specific
 counterexamples above.
 
+## Milestone 2: heading and turns
+
+Heading enters as `FlightState(ix, iy, il, ih)` in `planning/state.py`, where
+`ih` indexes `GridSpec.moves` rather than discretising angle independently. The
+projection `pi` keeps `environment/`, `evaluation/` and `visualization/` speaking
+`GridState`, so **heading lives entirely inside `planning/`** and
+`planning/astar.py` still imports no aerospace module.
+
+`aircraft/turn.py` holds the coordinated-turn geometry and knows nothing about
+grids. `CostModel.turn_metrics` evaluates a corner; `CostModel.with_turn` folds it
+into the following leg so the existing pricing path handles it with no new weight.
+`evaluate_trajectory` recomputes turns independently from consecutive *triples* of
+the projected cell sequence, ignoring the planner's heading index entirely -- which
+is what keeps A*, Dijkstra and both baselines scored by identical code, and what
+makes the rasterised direct-route baseline pay for its own staircase corners
+rather than being quietly exempted.
+
+With `turn_model: "none"` the Milestone 1 successor generator runs untouched and
+yields `GridState`, so parity is structural rather than coincidental. Derivations,
+the feasibility frontier and the heuristic argument are in
+[`turn_model.md`](turn_model.md).
+
 ## MVP scope
 
 **In.** Airspace representation; aircraft and planning-problem representation;
@@ -223,8 +251,8 @@ rendering; a unit and integration test suite covering each of the above.
 
 | Deferred | Why |
 | --- | --- |
-| Heading in the state, turn radius, bank limits | Multiplies the state space by the number of headings for an MVP whose subject is heuristic search, not kinematics |
-| Any-angle smoothing (Theta*, post-hoc string pulling) | Removes grid bias, but the bias is currently *measurable*, which is more useful while the cost model is being validated |
+| Any-angle smoothing (Theta*, post-hoc string pulling) | Removes grid bias, but the bias is currently *measurable*; it also *shortens* paths, which is exactly the operation that breaks invariant 3 and with it every admissibility flag |
+| A curvature-aware (Dubins) heuristic | The turn-then-tangent closed form was derived but its optimality for a *free* terminal heading was not proved, and an unproved lower bound is an unsound admissibility claim. See `turn_model.md` section 7 |
 | BADA-style performance tables | Licensing, and the current interface already accommodates a drop-in replacement |
 | Mass-varying fuel burn and step-climb optimisation | Requires a mass state and closes a feedback loop the MVP does not need |
 | ARA*, JPS, bidirectional search, hierarchical abstraction | Worth doing once the baseline expansion counts are trusted |

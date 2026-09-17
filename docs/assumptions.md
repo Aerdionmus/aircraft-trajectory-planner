@@ -52,7 +52,24 @@ Every number in this repository is synthetic.
 - **Climb and descent** are charged a fixed fuel delta per 1000 ft on top of the
   cruise burn for the time spent, and limited by a constant maximum vertical
   rate. There is no thrust/drag integration and no climb-speed schedule.
-- **No turn dynamics.** Heading is not part of the state, so turn radius, bank
+- **Turn dynamics (Milestone 2).** With `turn_model: "none"` -- the default, and
+  what every Milestone 1 scenario uses -- the paragraph below still holds
+  verbatim. With `gate` or `gate+cost`, heading enters the state as an index into
+  the grid move set, corners are gated by a fly-by tangent fit against a
+  bank-limited turn radius, and the turn is charged in time, fuel and risk. The
+  model is a constant-bank coordinated *level* turn: no roll-in or roll-out time,
+  no bank scheduling, no load-factor limit beyond the bank limit, and no
+  turn/climb coupling (a real aircraft loses climb performance in a turn). The
+  fly-by shortening is measured but never credited, so a reported cost is an
+  **upper** bound on the corresponding fly-by trajectory. Both legs of a corner
+  are evaluated with the wind sampled at the **node centre** rather than at their
+  own midpoints; that is what makes the incoming move index a sufficient
+  statistic, and it is an approximation of the same order as the existing
+  mid-segment sampling, degrading across a sharp shear. A pure level change has
+  no ground track and therefore no corner: the heading is carried through and
+  nothing is charged. Full derivation in [`turn_model.md`](turn_model.md).
+
+- **No turn dynamics (with `turn_model: "none"`).** Heading is not part of the state, so turn radius, bank
   angle limits and the path lengthening they cause are not modelled. A planned
   trajectory may contain instantaneous 45-degree heading changes.
 - **Descent fuel credits are clamped at zero** per segment, so a descent can
@@ -114,7 +131,9 @@ climb costs at least as much fuel as the matching descent refunds. A performance
 set that violates this has its fuel term dropped from the bound rather than
 silently trusted. The derivation is in `docs/architecture.md`.
 
-Note also what "optimal" does *not* mean here. A* returns a least-cost path in
+Note also what "optimal" does *not* mean here. The turn model narrows the gap
+between a graph-optimal trajectory and a flyable one; it does not close it.
+ A* returns a least-cost path in
 the discretised state space under this cost model. It is not the optimal
 continuous trajectory, not optimal under any other objective, and not a claim
 about any real flight.

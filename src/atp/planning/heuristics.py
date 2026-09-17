@@ -18,6 +18,36 @@ A consistent heuristic is admissible; the converse does not hold.  The search
 supports re-opening closed nodes so that inadmissible/inconsistent heuristics
 still terminate with a well-defined (if suboptimal) answer.
 
+Heading and inherited admissibility (Milestone 2)
+-------------------------------------------------
+Every heuristic here is a function of the projection
+``pi(ix, iy, il, ih) = (ix, iy, il)`` alone, which is what lets the Milestone 1
+admissibility arguments carry over verbatim to the heading-augmented state
+space.  Write ``G1`` for the Milestone 1 graph, ``G2`` for the Milestone 2 one.
+Two facts hold by construction:
+
+P1  every edge of ``G2`` projects onto an edge of ``G1`` -- the turn gate only
+    *removes* successors, it never invents a move outside ``GridSpec.moves``;
+P2  ``c2(s, s') >= c1(pi(s), pi(s'))`` -- turn terms are non-negative and no
+    distance is ever subtracted (invariant 4 in :mod:`atp.planning.cost`).
+
+*Admissibility is inherited.*  Let ``P2`` be an optimal ``G2`` path from ``s`` to
+the goal.  By P1 its projection is a walk to the goal in ``G1``, and by P2 that
+walk costs no more than ``h*_2(s)``.  All costs are non-negative, so no walk is
+cheaper than the optimal path, giving
+``h(pi(s)) <= h*_1(pi(s)) <= c1(pi(P2)) <= h*_2(s)``.
+
+*Consistency is inherited.*  For any ``(s, s')`` in ``G2``,
+``h(pi(s)) <= c1(pi(s), pi(s')) + h(pi(s')) <= c2(s, s') + h(pi(s'))``, and
+``h`` still vanishes on goal states.
+
+Both are asserted rather than claimed: ``tests/test_heuristics.py`` runs Dijkstra
+from every state of small grids under both turn models, and
+``tests/test_admissibility_m2.py`` checks the consistency inequality edge by
+edge.  The argument is *fragile*: it depends entirely on invariant 4, so any
+future change that credits a path for cutting a corner or smooths it after the
+fact invalidates every admissibility flag in this module.
+
 Lower-bound decomposition
 -------------------------
 For any feasible trajectory the total cost satisfies
@@ -53,6 +83,7 @@ from ..core.geometry import Vec2
 from ..core.units import ft_to_nm
 from ..environment.airspace import GridState
 from .problem import TrajectoryPlanningProblem
+from .state import cell_of
 
 
 class Heuristic(ABC):
@@ -63,7 +94,7 @@ class Heuristic(ABC):
     consistent: bool = True
 
     @abstractmethod
-    def __call__(self, state: GridState) -> float: ...
+    def __call__(self, state) -> float: ...
 
     def describe(self) -> dict[str, object]:
         return {
@@ -80,7 +111,7 @@ class ZeroHeuristic(Heuristic):
     admissible = True
     consistent = True
 
-    def __call__(self, state: GridState) -> float:
+    def __call__(self, state) -> float:
         return 0.0
 
 
@@ -91,14 +122,14 @@ class _GoalRelative(Heuristic):
         self.goal_alt_ft = problem.airspace.altitude_ft(problem.goal.state)
         self.match_level = problem.goal.match_level
 
-    def horizontal_nm(self, state: GridState) -> float:
-        p = self.problem.airspace.centre_nm(state)
+    def horizontal_nm(self, state) -> float:
+        p = self.problem.airspace.centre_nm(cell_of(state))
         return (self.goal_xy - p).norm()
 
-    def vertical_nm(self, state: GridState) -> float:
+    def vertical_nm(self, state) -> float:
         if not self.match_level:
             return 0.0
-        alt = self.problem.airspace.altitude_ft(state)
+        alt = self.problem.airspace.altitude_ft(cell_of(state))
         return ft_to_nm(abs(self.goal_alt_ft - alt))
 
 
@@ -117,7 +148,7 @@ class EuclideanDistanceHeuristic(_GoalRelative):
     admissible = True
     consistent = True
 
-    def __call__(self, state: GridState) -> float:
+    def __call__(self, state) -> float:
         d = math.hypot(self.horizontal_nm(state), self.vertical_nm(state))
         return self.problem.cost_model.weights.distance_cost_per_nm * d
 
@@ -144,7 +175,7 @@ class OptimisticCostHeuristic(_GoalRelative):
         self.distance_cost_per_nm = problem.cost_model.weights.distance_cost_per_nm
         self.offset = problem.cost_model.constant_cost_offset()
 
-    def __call__(self, state: GridState) -> float:
+    def __call__(self, state) -> float:
         horizontal = self.horizontal_nm(state)
         vertical = self.vertical_nm(state)
         return max(
@@ -177,7 +208,7 @@ class OctileHeuristic(_GoalRelative):
         self.admissible = connectivity <= 8
         self.consistent = connectivity <= 8
 
-    def _octile_nm(self, state: GridState) -> float:
+    def _octile_nm(self, state) -> float:
         dx = abs(state.ix - self.problem.goal.state.ix)
         dy = abs(state.iy - self.problem.goal.state.iy)
         if self.diagonal:
@@ -187,7 +218,7 @@ class OctileHeuristic(_GoalRelative):
             cells = dx + dy
         return cells * self.cell
 
-    def __call__(self, state: GridState) -> float:
+    def __call__(self, state) -> float:
         horizontal = self._octile_nm(state)
         vertical = self.vertical_nm(state)
         return max(
@@ -221,7 +252,7 @@ class ManhattanHeuristic(_GoalRelative):
             self.admissible = True
             self.consistent = True
 
-    def __call__(self, state: GridState) -> float:
+    def __call__(self, state) -> float:
         dx = abs(state.ix - self.problem.goal.state.ix)
         dy = abs(state.iy - self.problem.goal.state.iy)
         return max(0.0, self.cost_per_nm * (dx + dy) * self.cell - self.offset)
@@ -244,7 +275,7 @@ class WeightedHeuristic(Heuristic):
         self.admissible = base.admissible and weight == 1.0
         self.consistent = base.consistent and weight == 1.0
 
-    def __call__(self, state: GridState) -> float:
+    def __call__(self, state) -> float:
         return self.weight * self.base(state)
 
     def describe(self) -> dict[str, object]:

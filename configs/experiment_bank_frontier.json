@@ -1,0 +1,10 @@
+{
+  "name": "bank-frontier",
+  "scenarios": ["turn-limited"],
+  "heuristics": ["optimistic"],
+  "weights": [1.0],
+  "turn_models": ["gate+cost"],
+  "bank_angles_deg": [15.0, 20.0, 25.0, 30.0, 35.0],
+  "include_baseline": false,
+  "max_expansions": 400000
+}

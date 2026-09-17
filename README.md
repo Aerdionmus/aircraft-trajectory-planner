@@ -165,6 +165,15 @@ atp plan --seed 101
 # a scenario from a JSON file
 atp plan --scenario-file configs/scenario_two_no_fly.json
 
+# Milestone 2: bank-limited turns, with both direct-route references
+atp plan --scenario turn-limited --with-baseline --with-analytic-baseline
+
+# force turn dynamics onto any scenario, overriding the bank limit
+atp plan --scenario two-no-fly --turn-model gate+cost --bank-deg 30
+
+# the turn-model ablation (none / gate / gate+cost)
+atp experiment --config configs/experiment_turn_ablation.json --output-dir results
+
 # the full experiment matrix -> results/heuristic-comparison.{csv,json}
 atp experiment --config configs/experiment_default.json --output-dir results
 ```
@@ -194,6 +203,12 @@ model, the search itself (on hand-built graphs with no aerospace model
 involved), heuristic admissibility against a brute-force optimum, end-to-end
 planning, scenario validation, determinism and the CLI.
 
+`tests/test_milestone1_parity.py` pins Milestone 1 behaviour against a golden
+results file captured from the frozen commit. `tests/test_turn_geometry.py`,
+`tests/test_wind_heading.py`, `tests/test_heading_state.py`,
+`tests/test_turn_cost.py`, `tests/test_admissibility_m2.py` and
+`tests/test_m2_experiments.py` cover Milestone 2.
+
 `tests/test_audit_regressions.py` pins the specific defects found in the
 Milestone 1 audit: the two heuristic-admissibility failures (vertical distance
 charged at the speed-derived rate, and descent fuel credits), the corridor
@@ -218,22 +233,56 @@ restriction scenarios, so it is a compliance comparison there, not a cost one.
 src/atp/
   core/           units and dependency-free 2D geometry
   environment/    airspace grid, wind, risk and restricted regions
-  aircraft/       performance coefficients and the wind triangle
-  planning/       search problem, cost model, heuristics, A*
-  baselines/      direct-route reference planner
+  aircraft/       performance coefficients, the wind triangle, turn geometry
+  planning/       search problem, flight state, cost model, heuristics, A*
+  baselines/      direct-route and analytic straight-line references
   evaluation/     trajectory scoring, independent of the planner
   scenarios/      declarative JSON specs and the built-in library
   experiments/    deterministic runner, CSV/JSON output
   visualization/  ASCII rendering (no plotting dependency)
 configs/          example scenario and experiment documents
-docs/             architecture and assumptions
+docs/             architecture, assumptions and the turn model
 tests/            unit and integration tests
 ```
 
+## Turn dynamics
+
+Milestone 2 adds an optional heading dimension and a bank-limited turn model.
+`turn_model: "none"` is the default and reproduces Milestone 1 exactly; `"gate"`
+prunes illegal turns without charging for them; `"gate+cost"` also charges the
+turn in time, fuel and risk. Heading is an index into the grid move set, not an
+independent angular discretisation, so there is no rounding anywhere.
+
+A bank limit binds harder than it looks: a 450 kt jet at 25 degrees of bank has a
+6.33 NM turn radius, and on an 8-connected grid a 45 degree turn always joins an
+axis leg to a diagonal one, so the 5 NM grids the Milestone 1 scenarios use admit
+**no turn at all** at that bank. That is why they stay on `turn_model: "none"` and
+why `turn-limited`, the one scenario with turn dynamics enabled, uses 12 NM cells.
+The derivations, the feasibility frontier and the admissibility argument are in
+[`docs/turn_model.md`](docs/turn_model.md).
+
+Turn modelling may only *add* cost or *remove* edges, never make an edge cheaper.
+That invariant is what lets the Milestone 1 heuristics keep their admissibility
+and consistency declarations over the larger state space; it is proved in the docs
+and checked edge by edge in the tests.
+
 ## Status
 
-Milestone 1 (MVP) is complete: airspace and problem representation, hard and
-soft restrictions, the weighted cost model, the heuristic abstraction, A* and
-Dijkstra, path reconstruction, the direct-route baseline, deterministic
-experiments and the test suite. Deferred work, with the reason for each
-deferral, is tabulated in [`docs/architecture.md`](docs/architecture.md).
+Milestone 1 (MVP) is complete and frozen: airspace and problem representation,
+hard and soft restrictions, the weighted cost model, the heuristic abstraction,
+A* and Dijkstra, path reconstruction, the direct-route baseline, deterministic
+experiments and the test suite.
+
+Milestone 2 is complete: heading-aware state, bank-limited turn geometry, the
+air-heading solution of the wind triangle, turn-aware successor generation and
+evaluation, schema v2 with version 1 migration, the analytic straight-line
+reference, turn-model / bank-angle / connectivity experiment axes and
+trajectory-shape metrics. `tests/test_milestone1_parity.py` replays an experiment
+matrix captured from the frozen Milestone 1 commit and requires every
+deterministic column to reproduce exactly.
+
+A curvature-aware (Dubins) heuristic was designed but **not** shipped: its
+admissibility could not be proved within the milestone, and an unproved lower
+bound is an unsound claim. See [`docs/turn_model.md`](docs/turn_model.md) section
+7. Other deferred work, with the reason for each deferral, is tabulated in
+[`docs/architecture.md`](docs/architecture.md).

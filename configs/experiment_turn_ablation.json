@@ -1,0 +1,10 @@
+{
+  "name": "turn-ablation",
+  "scenarios": ["turn-limited"],
+  "heuristics": ["zero", "optimistic", "octile"],
+  "weights": [1.0],
+  "turn_models": ["none", "gate", "gate+cost"],
+  "include_baseline": true,
+  "include_analytic_baseline": true,
+  "max_expansions": 400000
+}

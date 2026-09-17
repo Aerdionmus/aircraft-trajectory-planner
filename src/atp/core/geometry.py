@@ -82,6 +82,28 @@ def met_wind_to_vector(direction_from_deg: float, speed_kt: float) -> Vec2:
     return Vec2(speed_kt * math.sin(heading_to_rad), speed_kt * math.cos(heading_to_rad))
 
 
+def perpendicular(v: Vec2) -> Vec2:
+    """``v`` rotated by +90 degrees (to its left in the x-east/y-north frame)."""
+    return Vec2(-v.y, v.x)
+
+
+def signed_angle_between(a: Vec2, b: Vec2) -> float:
+    """Signed angle from ``a`` to ``b`` in radians, wrapped to ``(-pi, pi]``.
+
+    Uses ``atan2(cross, dot)`` rather than ``acos(dot)`` so that the result is
+    both signed and numerically well conditioned near 0 and pi.  Returns ``0.0``
+    if either vector is degenerate.
+    """
+    if a.norm() < EPS or b.norm() < EPS:
+        return 0.0
+    return math.atan2(a.cross(b), a.dot(b))
+
+
+def angle_between(a: Vec2, b: Vec2) -> float:
+    """Unsigned angle between ``a`` and ``b`` in radians, in ``[0, pi]``."""
+    return abs(signed_angle_between(a, b))
+
+
 def point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> float:
     """Shortest distance from point ``p`` to segment ``ab``."""
     ab = b - a

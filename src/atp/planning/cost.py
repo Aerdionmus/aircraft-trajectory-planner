@@ -26,6 +26,13 @@ Invariants the search depends on
    heuristic is built from it, together with the distance price applied to 3D
    length.
 3. Infeasible transitions are reported as such, never as "very expensive".
+4. **Monotone refinement.**  No Milestone 2 refinement may lower the cost of a
+   transition relative to its Milestone 1 value.  Turn modelling may only add
+   cost (time, fuel, risk) or remove edges; it never adds or subtracts
+   distance, and in particular the geometric shortening a fly-by arc produces
+   is measured (``corner_cut_nm``) but never credited.  This invariant is what
+   makes the inherited-admissibility argument in :mod:`atp.planning.heuristics`
+   hold, and it is checked directly by ``tests/test_turn_cost.py``.
 """
 
 from __future__ import annotations
@@ -35,9 +42,22 @@ from dataclasses import dataclass, replace
 
 from ..aircraft.kinematics import max_possible_ground_speed_kt, solve_ground_speed
 from ..aircraft.performance import AircraftPerformance
-from ..core.geometry import Vec2
+from ..aircraft.turn import (
+    NEGLIGIBLE_TURN_RAD,
+    corner_cut_nm,
+    ground_curvature_radius_bound_nm,
+    tangent_length_nm,
+    turn_time_h,
+)
+from ..core.geometry import Vec2, angle_between
 from ..core.units import MIN_PER_H, ft_to_nm
 from ..environment.airspace import Airspace, GridState
+
+#: Accepted turn models.  ``none`` reproduces Milestone 1 exactly: heading never
+#: enters the state and no turn is evaluated.  ``gate`` applies the legality
+#: tests but charges nothing, isolating the effect of pruning.  ``gate+cost``
+#: is the full model.
+TURN_MODELS: tuple[str, ...] = ("none", "gate", "gate+cost")
 
 
 @dataclass(frozen=True)
@@ -73,6 +93,36 @@ class CostWeights:
 
 
 @dataclass(frozen=True)
+class TurnMetrics:
+    """What one corner contributes, before pricing.
+
+    ``delta_heading_rad`` is the change in *air* heading, which in wind differs
+    from ``delta_track_rad``, the change in ground track: the aircraft rolls
+    about its own axis, so a bank limit constrains the former.
+    ``corner_cut_nm`` is a diagnostic only -- see
+    :func:`atp.aircraft.turn.corner_cut_nm`.
+    """
+
+    feasible: bool
+    delta_heading_rad: float = 0.0
+    delta_track_rad: float = 0.0
+    time_h: float = 0.0
+    fuel_kg: float = 0.0
+    risk_exposure: float = 0.0
+    corner_cut_nm: float = 0.0
+    radius_nm: float = 0.0
+    infeasible_reason: str = ""
+
+    @staticmethod
+    def infeasible(reason: str) -> "TurnMetrics":
+        return TurnMetrics(feasible=False, infeasible_reason=reason)
+
+
+#: The "no corner here" turn: start state, pure level change, or turn_model none.
+NO_TURN = TurnMetrics(feasible=True)
+
+
+@dataclass(frozen=True)
 class SegmentMetrics:
     """Everything one transition contributes, before pricing."""
 
@@ -86,6 +136,15 @@ class SegmentMetrics:
     ground_speed_kt: float = 0.0
     mean_risk_density: float = 0.0
     infeasible_reason: str = ""
+    #: Turn contributions, already included in ``time_h`` / ``fuel_kg`` /
+    #: ``risk_exposure`` above and repeated here for reporting.
+    turn_time_h: float = 0.0
+    turn_fuel_kg: float = 0.0
+    heading_change_rad: float = 0.0
+    track_change_rad: float = 0.0
+    corner_cut_nm: float = 0.0
+    num_turns: int = 0
+    max_heading_change_rad: float = 0.0
 
     @staticmethod
     def infeasible(reason: str) -> "SegmentMetrics":
@@ -113,6 +172,15 @@ class SegmentMetrics:
             ground_speed_kt=gs,
             mean_risk_density=max(self.mean_risk_density, other.mean_risk_density),
             infeasible_reason=self.infeasible_reason or other.infeasible_reason,
+            turn_time_h=self.turn_time_h + other.turn_time_h,
+            turn_fuel_kg=self.turn_fuel_kg + other.turn_fuel_kg,
+            heading_change_rad=self.heading_change_rad + other.heading_change_rad,
+            track_change_rad=self.track_change_rad + other.track_change_rad,
+            corner_cut_nm=self.corner_cut_nm + other.corner_cut_nm,
+            num_turns=self.num_turns + other.num_turns,
+            max_heading_change_rad=max(
+                self.max_heading_change_rad, other.max_heading_change_rad
+            ),
         )
 
 
@@ -162,14 +230,26 @@ class CostModel:
         *,
         integration_samples: int = 6,
         enforce_vertical_rate: bool = True,
+        turn_model: str = "none",
+        max_turn_deg: float = 180.0,
     ) -> None:
         if integration_samples < 1:
             raise ValueError("integration_samples must be >= 1")
+        if turn_model not in TURN_MODELS:
+            raise ValueError(f"turn_model must be one of {list(TURN_MODELS)}")
+        if not 0.0 < max_turn_deg <= 180.0:
+            raise ValueError("max_turn_deg must lie in (0, 180]")
         self.airspace = airspace
         self.aircraft = aircraft
         self.weights = weights
         self.integration_samples = integration_samples
         self.enforce_vertical_rate = enforce_vertical_rate
+        self.turn_model = turn_model
+        self.max_turn_deg = max_turn_deg
+
+    @property
+    def models_turns(self) -> bool:
+        return self.turn_model != "none"
 
     # -- physical evaluation -------------------------------------------------
     def evaluate(self, a: GridState, b: GridState) -> SegmentMetrics:
@@ -281,6 +361,151 @@ class CostModel:
             mean_risk_density=mean_risk,
         )
 
+    # -- turns ---------------------------------------------------------------
+    def turn_metrics(
+        self,
+        node: GridState,
+        in_track_unit: Vec2 | None,
+        out_track_unit: Vec2,
+        leg_in_nm: float,
+        leg_out_nm: float,
+    ) -> TurnMetrics:
+        """Evaluate the corner flown at ``node`` between two ground tracks.
+
+        ``in_track_unit is None`` means there is no incoming leg (the start
+        state, or a preceding pure level change): no corner, no charge, no gate.
+
+        Both legs are evaluated with the wind sampled at the **node centre**, not
+        at their own midpoints.  That is an approximation of the same order as
+        the mid-segment sampling already used for a leg, and it is what makes the
+        incoming move index a sufficient statistic: without it the air heading
+        arriving at a node would depend on the previous leg's midpoint wind,
+        which is not in the state.  ``docs/assumptions.md`` records it.
+        """
+        if not self.models_turns or in_track_unit is None:
+            return NO_TURN
+        if leg_in_nm <= 0.0 or leg_out_nm <= 0.0:
+            return NO_TURN
+
+        spec = self.airspace.spec
+        p = spec.centre_nm(node)
+        alt = spec.altitude_ft(node.il)
+        tas = self.aircraft.tas_kt(alt)
+        wind = self.airspace.wind.at(p.x, p.y, alt)
+
+        incoming = solve_ground_speed(tas, wind, in_track_unit)
+        if not incoming.feasible:
+            return TurnMetrics.infeasible(
+                f"incoming track unflyable at node: {incoming.reason}"
+            )
+        outgoing = solve_ground_speed(tas, wind, out_track_unit)
+        if not outgoing.feasible:
+            return TurnMetrics.infeasible(
+                f"outgoing track unflyable at node: {outgoing.reason}"
+            )
+
+        delta_heading = angle_between(
+            incoming.air_heading_unit, outgoing.air_heading_unit
+        )
+        delta_track = angle_between(in_track_unit, out_track_unit)
+
+        if delta_heading < NEGLIGIBLE_TURN_RAD:
+            # Straight flight: legal by definition and free, but still reported.
+            return TurnMetrics(
+                feasible=True,
+                delta_heading_rad=delta_heading,
+                delta_track_rad=delta_track,
+            )
+
+        if math.degrees(delta_heading) > self.max_turn_deg + 1e-9:
+            return TurnMetrics.infeasible(
+                f"heading change {math.degrees(delta_heading):.1f} deg "
+                f"exceeds cap {self.max_turn_deg:.1f} deg"
+            )
+
+        omega = self.aircraft.turn_rate_rad_per_h(alt)
+        # A sound upper bound on the ground-path radius of curvature reached
+        # at ANY instant of the turn, not just at the two leg endpoints -- see
+        # ground_curvature_radius_bound_nm for the derivation.  ``GS / omega``
+        # at an endpoint speed is not sound: in a tailwind component it can
+        # under-estimate the true radius, the wrong direction for a gate that
+        # is documented elsewhere to over-block rather than under-block.
+        radius = ground_curvature_radius_bound_nm(
+            tas, wind.norm(), self.aircraft.max_bank_deg
+        )
+        available = 0.5 * min(leg_in_nm, leg_out_nm)
+        tangent = tangent_length_nm(radius, delta_heading)
+        if tangent > available + 1e-9:
+            return TurnMetrics.infeasible(
+                f"turn of {math.degrees(delta_heading):.1f} deg needs "
+                f"{tangent:.2f} NM of leg, {available:.2f} NM available"
+            )
+
+        cut = corner_cut_nm(radius, delta_heading)
+        if self.turn_model == "gate":
+            return TurnMetrics(
+                feasible=True,
+                delta_heading_rad=delta_heading,
+                delta_track_rad=delta_track,
+                corner_cut_nm=cut,
+                radius_nm=radius,
+            )
+
+        time_h = turn_time_h(delta_heading, omega)
+        fuel = (
+            self.aircraft.fuel_flow_kg_per_h(alt)
+            * time_h
+            * self.aircraft.turn_fuel_factor
+        )
+        exposure = max(0.0, self.airspace.risk.density_at(p.x, p.y, alt)) * time_h
+        return TurnMetrics(
+            feasible=True,
+            delta_heading_rad=delta_heading,
+            delta_track_rad=delta_track,
+            time_h=time_h,
+            fuel_kg=max(0.0, fuel),
+            risk_exposure=exposure,
+            corner_cut_nm=cut,
+            radius_nm=radius,
+        )
+
+    @staticmethod
+    def with_turn(metrics: SegmentMetrics, turn: TurnMetrics) -> SegmentMetrics:
+        """Fold a corner into the following leg's metrics.
+
+        Turn time, fuel and risk are added to the leg totals so that the existing
+        pricing path handles them with no new weight; distance is untouched, so
+        invariant 4 holds by construction.
+        """
+        if not metrics.feasible:
+            return metrics
+        if not turn.feasible:
+            return SegmentMetrics.infeasible(turn.infeasible_reason)
+        charged = turn.delta_heading_rad >= NEGLIGIBLE_TURN_RAD
+        return replace(
+            metrics,
+            time_h=metrics.time_h + turn.time_h,
+            fuel_kg=metrics.fuel_kg + turn.fuel_kg,
+            risk_exposure=metrics.risk_exposure + turn.risk_exposure,
+            turn_time_h=metrics.turn_time_h + turn.time_h,
+            turn_fuel_kg=metrics.turn_fuel_kg + turn.fuel_kg,
+            heading_change_rad=metrics.heading_change_rad + turn.delta_heading_rad,
+            track_change_rad=metrics.track_change_rad + turn.delta_track_rad,
+            corner_cut_nm=metrics.corner_cut_nm + turn.corner_cut_nm,
+            num_turns=metrics.num_turns + (1 if charged else 0),
+            max_heading_change_rad=max(
+                metrics.max_heading_change_rad, turn.delta_heading_rad
+            ),
+        )
+
+    def transition_cost_with_turn(
+        self, a: GridState, b: GridState, turn: TurnMetrics
+    ) -> tuple[float, SegmentMetrics]:
+        metrics = self.with_turn(self.evaluate(a, b), turn)
+        if not metrics.feasible:
+            return math.inf, metrics
+        return self.price(metrics).total, metrics
+
     # -- pricing -------------------------------------------------------------
     def price(self, metrics: SegmentMetrics) -> CostBreakdown:
         if not metrics.feasible:
@@ -388,6 +613,8 @@ class CostModel:
             weights,
             integration_samples=self.integration_samples,
             enforce_vertical_rate=self.enforce_vertical_rate,
+            turn_model=self.turn_model,
+            max_turn_deg=self.max_turn_deg,
         )
 
 

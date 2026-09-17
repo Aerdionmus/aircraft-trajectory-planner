@@ -36,6 +36,16 @@ S_PER_H: float = 3600.0
 FT_PER_FLIGHT_LEVEL: float = 100.0
 
 
+#: Standard gravity expressed in the package's own units.
+#:
+#: ``9.80665 m/s^2``; one NM is 1852 m and one hour is 3600 s, so
+#: ``9.80665 / 1852 * 3600**2 = 68625.369...`` NM/h^2.  Used by the coordinated
+#: turn equations in :mod:`atp.aircraft.turn`, where a radius computed as
+#: ``V_kt**2 / (G_NM_PER_H2 * tan(bank))`` comes out in NM and a turn rate
+#: computed as ``G_NM_PER_H2 * tan(bank) / V_kt`` comes out in rad/h.
+G_NM_PER_H2: float = 9.80665 / 1852.0 * (S_PER_H * S_PER_H)
+
+
 def nm_to_ft(distance_nm: float) -> float:
     return distance_nm * FT_PER_NM
 

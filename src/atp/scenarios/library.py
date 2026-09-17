@@ -14,6 +14,9 @@ code path.  They are ordered by what they are designed to isolate:
                         risk price, not on the geometry.
 ``corridor-charge``     soft restriction: penalty versus detour.
 ``dense-restrictions``  search-effort stress case.
+``turn-limited``        Milestone 2: a bank-limited aircraft must route around a
+                        prohibited area that the direct track crosses, on a grid
+                        coarse enough for a 45 degree turn to be flyable.
 
 ``random_scenario`` produces reproducible pseudo-random instances from an
 integer seed for scaling experiments.
@@ -198,6 +201,38 @@ def dense_restrictions() -> ScenarioSpec:
     )
 
 
+def turn_limited() -> ScenarioSpec:
+    """The only library scenario that opts into turn dynamics.
+
+    12 NM cells: at 450 kt a 25 degree bank gives a 6.33 NM turn radius, so a
+    45 degree fly-by needs 2.62 NM of leg against the 6.0 NM half-leg available.
+    The turn is comfortably flyable here, which is the point -- the scenario
+    isolates the *cost* of manoeuvring rather than a resolution artefact.  On
+    the 5 NM grids the other scenarios use, the same turn needs more leg than an
+    axis-aligned half-leg provides; that is why they stay on ``turn_model:
+    none``.  See ``docs/turn_model.md``.
+    """
+    return ScenarioSpec(
+        name="turn-limited",
+        description="Bank-limited routing around a prohibited area on a 12 NM "
+        "grid; the only built-in scenario with turn dynamics enabled.",
+        grid=_grid(cells=40, cell_nm=12.0),
+        start=[2, 20, 0],
+        goal=[37, 20, 0],
+        start_heading_deg=90.0,
+        turn_model="gate+cost",
+        restrictions=[
+            {
+                "type": "circle",
+                "id": "P-301",
+                "centre_nm": [240.0, 246.0],
+                "radius_nm": 60.0,
+            }
+        ],
+        weights=dict(BASE_WEIGHTS),
+    )
+
+
 SCENARIO_LIBRARY: dict[str, Callable[[], ScenarioSpec]] = {
     "empty-cruise": empty_cruise,
     "two-no-fly": two_no_fly,
@@ -206,6 +241,7 @@ SCENARIO_LIBRARY: dict[str, Callable[[], ScenarioSpec]] = {
     "convective-risk": convective_risk,
     "corridor-charge": corridor_charge,
     "dense-restrictions": dense_restrictions,
+    "turn-limited": turn_limited,
 }
 
 
