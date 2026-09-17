@@ -1,0 +1,10 @@
+{
+  "name": "wind-turns",
+  "scenarios": ["turn-limited", "turn-limited-wind"],
+  "heuristics": ["zero", "optimistic", "octile"],
+  "weights": [1.0],
+  "turn_models": ["gate+cost"],
+  "include_baseline": true,
+  "include_analytic_baseline": true,
+  "max_expansions": 400000
+}

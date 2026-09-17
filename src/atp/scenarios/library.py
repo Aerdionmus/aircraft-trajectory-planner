@@ -233,6 +233,59 @@ def turn_limited() -> ScenarioSpec:
     )
 
 
+def turn_limited_wind() -> ScenarioSpec:
+    """``turn-limited`` geometry flown in a uniform wind.
+
+    Milestone 2 separated *air heading* from *ground track*: the planner commands
+    a track, the wind triangle recovers the heading, and the bank limit
+    constrains the heading change rather than the track change.  In still air the
+    two coincide exactly, so ``turn-limited`` -- which has no wind -- cannot
+    exhibit the distinction, and neither can the 5 NM wind scenarios, where no
+    turn is legal at 450 kt in the first place.  Every shipped experiment
+    therefore reported ``wind_heading_excess_deg = 0``.
+
+    This scenario exists to close that gap.  The grid, restriction, endpoints,
+    departure heading and weights are identical to ``turn-limited``; the only
+    change is a uniform 90 kt wind from 270, the same magnitude and direction the
+    jet-stream layer in ``layered-jetstream`` already uses.  Holding everything
+    else fixed makes the pair a controlled comparison: any difference between the
+    two runs is attributable to the wind alone.
+
+    The wind is well inside the ``|w| <= TAS`` precondition that
+    :func:`atp.aircraft.turn.ground_curvature_radius_bound_nm` requires, so the
+    corrected bound applies rather than degenerating to ``inf``.  It is uniform
+    on purpose: the node-centre wind sample the turn model uses is then exact,
+    so the measured heading/track difference is a property of the wind triangle
+    and not of the sampling approximation.
+    """
+    return ScenarioSpec(
+        name="turn-limited-wind",
+        description="turn-limited geometry in a uniform 90 kt wind; exercises "
+        "air-heading recovery and the wind-aware turn geometry.",
+        grid=_grid(cells=40, cell_nm=12.0),
+        start=[2, 20, 0],
+        goal=[37, 20, 0],
+        start_heading_deg=90.0,
+        turn_model="gate+cost",
+        wind=[
+            {
+                "type": "uniform",
+                "direction_from_deg": 270.0,
+                "speed_kt": 90.0,
+            }
+        ],
+        restrictions=[
+            {
+                "type": "circle",
+                "id": "P-301",
+                "centre_nm": [240.0, 246.0],
+                "radius_nm": 60.0,
+            }
+        ],
+        weights=dict(BASE_WEIGHTS),
+    )
+
+
 SCENARIO_LIBRARY: dict[str, Callable[[], ScenarioSpec]] = {
     "empty-cruise": empty_cruise,
     "two-no-fly": two_no_fly,
@@ -242,6 +295,7 @@ SCENARIO_LIBRARY: dict[str, Callable[[], ScenarioSpec]] = {
     "corridor-charge": corridor_charge,
     "dense-restrictions": dense_restrictions,
     "turn-limited": turn_limited,
+    "turn-limited-wind": turn_limited_wind,
 }
 
 

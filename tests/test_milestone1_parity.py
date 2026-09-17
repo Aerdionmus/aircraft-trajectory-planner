@@ -96,8 +96,16 @@ def test_heuristic_bounds_are_untouched_by_milestone_2(name):
 
 
 def test_library_scenarios_default_to_milestone_1_semantics():
-    """Only ``turn-limited`` opts in; everything else must still be Milestone 1."""
+    """Only the two ``turn-limited`` variants opt in; everything else must still
+    be Milestone 1.
+
+    ``turn-limited-wind`` was added to give the wind-aware air-heading machinery
+    experimental coverage.  It is deliberately *not* in
+    ``configs/experiment_parity.json``, so the golden Milestone 1 matrix above is
+    untouched by it; this assertion stays an exact set equality so that a third
+    scenario cannot quietly opt into turn dynamics.
+    """
     opted_in = {
         name for name in SCENARIO_LIBRARY if get_scenario(name).turn_model != "none"
     }
-    assert opted_in == {"turn-limited"}
+    assert opted_in == {"turn-limited", "turn-limited-wind"}

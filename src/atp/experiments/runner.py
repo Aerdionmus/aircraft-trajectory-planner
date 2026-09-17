@@ -266,7 +266,8 @@ def summarise(reports: Sequence[PlanReport]) -> str:
     header = (
         f"{'scenario':<24} {'planner':<15} {'heuristic':<20} {'turn':<9} "
         f"{'status':<20} {'cost':>12} {'dist_nm':>9} {'time_min':>9} "
-        f"{'fuel_kg':>9} {'turns':>6} {'hdg_deg':>8} {'expand':>8}"
+        f"{'fuel_kg':>9} {'corners':>8} {'charged':>8} {'hdg_deg':>8} "
+        f"{'expand':>8}"
     )
     lines = [header, "-" * len(header)]
     partial = False
@@ -280,7 +281,7 @@ def summarise(reports: Sequence[PlanReport]) -> str:
             f"{r.scenario:<24} {r.planner:<15} {r.heuristic:<20} "
             f"{r.turn_model:<9} {r.status:<20} "
             f"{e.comparable_cost:>12.1f} {e.distance_nm:>9.1f} {e.time_min:>9.1f} "
-            f"{e.fuel_kg:>9.1f} {e.num_turns:>6d} "
+            f"{e.fuel_kg:>9.1f} {e.geometric_corners:>8d} {e.num_turns:>8d} "
             f"{e.total_heading_change_deg:>8.1f} {r.statistics.expansions:>8d}{mark}"
         )
     if partial:

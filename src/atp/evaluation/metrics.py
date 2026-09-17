@@ -25,6 +25,26 @@ ignored entirely.  That keeps the Milestone 1 property that A*, Dijkstra and
 every baseline are scored by identical code, and it means the rasterised
 direct-route baseline is charged for its own staircase corners rather than
 being quietly exempted.
+
+Two distinct quantities are reported, and they must not be conflated:
+
+``geometric_corners``
+    How many direction changes the returned ground track actually contains.
+    Computed from the cell sequence alone, so it is **independent of whether a
+    turn model is active**.  A Milestone 1 trajectory flown with
+    ``turn_model="none"`` still has corners, and this counts them.
+
+``num_turns``
+    How many corners the *active turn model* evaluated and charged.  It is zero
+    by construction when ``turn_model="none"``, because no turn was modelled --
+    which is a statement about the model, not about the trajectory's shape.
+
+Before this distinction existed the turn-ablation experiment reported
+``num_turns = 0`` for the ``none`` arm and invited the reader to conclude the
+Milestone 1 route was straight, when in fact it contained the same corners as
+the ``gate`` arm.  Reporting both makes the ablation interpretable: ``gate``
+prunes corners the aircraft could not fly, and ``gate+cost`` additionally prices
+the ones it can, so the geometric count is what actually moves between arms.
 """
 
 from __future__ import annotations
@@ -52,6 +72,12 @@ class TrajectoryEvaluation:
     soft_penalty: float = 0.0
     level_changes: int = 0
     total_climb_ft: float = 0.0
+    #: Direction changes present in the returned ground track, counted from the
+    #: cell sequence and therefore independent of the active turn model.
+    geometric_corners: int = 0
+    #: Corners the active turn model evaluated and charged.  Zero whenever
+    #: ``turn_model="none"``, since no turn was modelled.  See the module
+    #: docstring: this is not the same quantity as ``geometric_corners``.
     num_turns: int = 0
     total_heading_change_deg: float = 0.0
     max_heading_change_deg: float = 0.0
@@ -93,6 +119,7 @@ class TrajectoryEvaluation:
             "soft_penalty": self.soft_penalty,
             "level_changes": self.level_changes,
             "total_climb_ft": self.total_climb_ft,
+            "geometric_corners": self.geometric_corners,
             "num_turns": self.num_turns,
             "total_heading_change_deg": self.total_heading_change_deg,
             "max_heading_change_deg": self.max_heading_change_deg,
@@ -113,6 +140,39 @@ def _move_of(a: GridState, b: GridState) -> tuple[int, int] | None:
     level change (which has no ground track and therefore no corner)."""
     move = (b.ix - a.ix, b.iy - a.iy)
     return None if move == (0, 0) else move
+
+
+def count_geometric_corners(
+    cells: list[GridState], start_move: tuple[int, int] | None = None
+) -> int:
+    """Direction changes in a projected cell sequence.
+
+    Purely a property of the ground track: two consecutive horizontal moves that
+    differ form a corner.  Nothing here consults the cost model, the turn model
+    or the aircraft, so the count is the same whether or not turns are being
+    gated and priced -- which is the whole point of reporting it separately from
+    :attr:`TrajectoryEvaluation.num_turns`.
+
+    Pure level changes contribute no ground track and therefore no corner; the
+    heading is carried across them, matching :meth:`CostModel.turn_metrics`.
+    ``start_move`` is the declared departure track, if the scenario has one, so
+    that a first leg which departs from it counts as a corner exactly as the
+    turn model would charge it.
+
+    Unlike the priced metrics this counts the whole returned sequence, including
+    segments that violate a hard constraint: it describes the shape of the
+    trajectory that came back, not the part of it that could be priced.
+    """
+    corners = 0
+    previous = start_move
+    for a, b in zip(cells, cells[1:]):
+        move = _move_of(a, b)
+        if move is None:
+            continue
+        if previous is not None and move != previous:
+            corners += 1
+        previous = move
+    return corners
 
 
 def evaluate_trajectory(
@@ -190,6 +250,7 @@ def evaluate_trajectory(
         soft_penalty=total.restriction_penalty,
         level_changes=level_changes,
         total_climb_ft=climb_ft,
+        geometric_corners=count_geometric_corners(cells, start_move),
         num_turns=total.num_turns,
         total_heading_change_deg=heading_deg,
         max_heading_change_deg=math.degrees(total.max_heading_change_rad),
