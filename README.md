@@ -8,6 +8,13 @@ This project investigates the application of **A\* heuristic search** to aircraf
 
 The project is developed as an academic Artificial Intelligence case study with a focus on classical heuristic search and its application to aviation systems.
 
+> **Scope.** This is a simulation and teaching package. It models a synthetic
+> airspace with synthetic wind, risk and restriction data and a heavily
+> simplified aircraft performance model. It is **not** flight-planning software,
+> is not validated against any operational system, and carries no airworthiness
+> or certification claim. Every aerospace simplification is listed in
+> [`docs/assumptions.md`](docs/assumptions.md).
+
 ## Objectives
 
 The primary objectives of this project are to:
@@ -119,3 +126,103 @@ Experiments will investigate the effect of:
 │      Visualization & Analysis       │
 │ Trajectory plots and comparisons    │
 └─────────────────────────────────────┘
+```
+
+The diagram above is the intended layering. Two deviations are deliberate:
+visualization is a leaf that takes `(airspace, path)` and returns a string
+rather than a pipeline stage, and evaluation re-scores a trajectory from
+scratch rather than consuming the planner's own accumulators, so that A\*,
+Dijkstra and the baseline are judged by identical code. See
+[`docs/architecture.md`](docs/architecture.md).
+
+## Installation
+
+Python 3.10 or later. The core library has **no runtime dependencies**; it must
+stay importable and testable without a scientific stack.
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+## Usage
+
+```bash
+# list the built-in scenarios and what each one isolates
+atp scenarios
+
+# plan a trajectory, compare against the direct-route baseline, draw an ASCII map
+atp plan --scenario jetstream --heuristic optimistic --with-baseline --render
+
+# Dijkstra (A* with a zero heuristic) as the optimality reference
+atp plan --scenario two-no-fly --heuristic zero
+
+# weighted A*: bounded suboptimality, far fewer expansions
+atp plan --scenario dense-restrictions --heuristic optimistic --weight 2.5
+
+# a reproducible random instance
+atp plan --seed 101
+
+# a scenario from a JSON file
+atp plan --scenario-file configs/scenario_two_no_fly.json
+
+# the full experiment matrix -> results/heuristic-comparison.{csv,json}
+atp experiment --config configs/experiment_default.json --output-dir results
+```
+
+`python -m atp ...` works identically if the console script is not on `PATH`.
+
+From Python:
+
+```python
+from atp.scenarios.library import get_scenario
+from atp.scenarios.spec import build_scenario
+from atp.experiments.runner import run_plan
+
+built = build_scenario(get_scenario("convective-risk"))
+report = run_plan(built, heuristic="optimistic")
+print(report.evaluation.as_dict())
+```
+
+## Tests
+
+```bash
+python -m pytest -q
+```
+
+The suite covers geometry, the wind triangle, restriction enforcement, the cost
+model, the search itself (on hand-built graphs with no aerospace model
+involved), heuristic admissibility against a brute-force optimum, end-to-end
+planning, scenario validation, determinism and the CLI.
+
+Two properties are asserted rather than claimed:
+
+- **Admissibility.** Dijkstra is run from every state of small grids across five
+  environments; no heuristic declared admissible is allowed to overestimate.
+- **Determinism.** A repeated experiment matrix must reproduce byte-for-byte
+  apart from wall-clock columns.
+
+## Repository layout
+
+```text
+src/atp/
+  core/           units and dependency-free 2D geometry
+  environment/    airspace grid, wind, risk and restricted regions
+  aircraft/       performance coefficients and the wind triangle
+  planning/       search problem, cost model, heuristics, A*
+  baselines/      direct-route reference planner
+  evaluation/     trajectory scoring, independent of the planner
+  scenarios/      declarative JSON specs and the built-in library
+  experiments/    deterministic runner, CSV/JSON output
+  visualization/  ASCII rendering (no plotting dependency)
+configs/          example scenario and experiment documents
+docs/             architecture and assumptions
+tests/            unit and integration tests
+```
+
+## Status
+
+Milestone 1 (MVP) is complete: airspace and problem representation, hard and
+soft restrictions, the weighted cost model, the heuristic abstraction, A* and
+Dijkstra, path reconstruction, the direct-route baseline, deterministic
+experiments and the test suite. Deferred work, with the reason for each
+deferral, is tabulated in [`docs/architecture.md`](docs/architecture.md).

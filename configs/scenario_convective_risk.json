@@ -1,0 +1,67 @@
+{
+  "name": "convective-risk",
+  "grid": {
+    "cells_x": 60,
+    "cells_y": 60,
+    "cell_size_nm": 5.0,
+    "flight_levels": [
+      300
+    ],
+    "connectivity": 8
+  },
+  "start": [
+    2,
+    2,
+    0
+  ],
+  "goal": [
+    57,
+    57,
+    0
+  ],
+  "aircraft": "medium-twin-jet",
+  "match_goal_level": false,
+  "wind": [],
+  "restrictions": [],
+  "risk": [
+    {
+      "type": "gaussian",
+      "centre_nm": [
+        120.0,
+        120.0
+      ],
+      "peak": 1.0,
+      "sigma_nm": 25.0
+    },
+    {
+      "type": "gaussian",
+      "centre_nm": [
+        180.0,
+        160.0
+      ],
+      "peak": 0.8,
+      "sigma_nm": 20.0
+    },
+    {
+      "type": "gaussian",
+      "centre_nm": [
+        90.0,
+        170.0
+      ],
+      "peak": 0.6,
+      "sigma_nm": 18.0
+    }
+  ],
+  "weights": {
+    "time_cost_per_hour": 3000.0,
+    "fuel_cost_per_kg": 0.8,
+    "distance_cost_per_nm": 2.0,
+    "risk_cost_per_exposure": 15000.0,
+    "restriction_penalty_scale": 1.0
+  },
+  "allow_level_change_with_move": true,
+  "allow_pure_level_change": false,
+  "integration_samples": 6,
+  "description": "Three convective cells on the direct track, priced as risk rather than prohibited. Route shape depends on risk_cost_per_exposure.",
+  "schema_version": 1
+}
