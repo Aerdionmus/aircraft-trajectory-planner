@@ -25,6 +25,14 @@ same reason.
 Version 2 adds ``turn_model``, ``max_bank_deg``, ``max_turn_deg``,
 ``start_heading_deg`` and ``goal_heading_deg``.  A version 2 document that does
 not name a turn model gets ``"gate+cost"``.
+
+Version 3 adds ``speed_envelope`` and ``start_speed_kt``.  A document of any
+earlier version -- and a version 3 document that declares no envelope -- keeps
+the aircraft's own implicit singleton envelope ``{cruise_tas_kt}``, which is the
+Milestone 2 operating point and reproduces Milestone 2 behaviour exactly.  A
+speed envelope is never switched on implicitly: a scenario written before speed
+was a decision variable was not designed for one, the same reasoning that made
+version 1 documents migrate to ``turn_model="none"``.
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from ..aircraft.envelope import SpeedEnvelope
 from ..aircraft.performance import AIRCRAFT_LIBRARY, AircraftPerformance
 from ..core.geometry import Vec2, met_wind_to_vector
 from ..environment.airspace import Airspace, GridSpec, GridState
@@ -63,8 +72,8 @@ from ..planning.cost import TURN_MODELS, CostModel, CostWeights
 from ..planning.problem import GoalSpec, TrajectoryPlanningProblem
 from ..planning.state import TurnTable
 
-SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
 #: Turn model applied to a version 2 document that does not name one.
 DEFAULT_V2_TURN_MODEL = "gate+cost"
 
@@ -129,6 +138,14 @@ class ScenarioSpec:
     #: True bearings (0 = north, clockwise), snapped to the nearest grid move.
     start_heading_deg: float | None = None
     goal_heading_deg: float | None = None
+    #: Milestone 3.  ``None`` keeps the aircraft's implicit single-speed
+    #: envelope, i.e. Milestone 2 behaviour.  Otherwise a document of the form
+    #: ``{"planning_tas_kt": [...], "cruise_tas_kt": v, "min_cas_kt": ...,
+    #: "max_cas_kt": ..., "max_mach": ...}``.
+    speed_envelope: dict[str, Any] | None = None
+    #: TAS of the notional leg arriving at the start, used only to evaluate the
+    #: departure corner.  Must be one of the planning speeds when set.
+    start_speed_kt: float | None = None
     description: str = ""
     schema_version: int = SCHEMA_VERSION
 
@@ -160,6 +177,8 @@ class ScenarioSpec:
             "max_turn_deg",
             "start_heading_deg",
             "goal_heading_deg",
+            "speed_envelope",
+            "start_speed_kt",
             "description",
             "schema_version",
         }
@@ -179,6 +198,10 @@ class ScenarioSpec:
             turn_model = "none"
         else:
             turn_model = doc.get("turn_model", DEFAULT_V2_TURN_MODEL)
+        if version < 3 and doc.get("speed_envelope") is not None:
+            raise ScenarioError(
+                "scenario: speed_envelope requires schema_version 3"
+            )
         if turn_model not in TURN_MODELS:
             raise ScenarioError(
                 f"scenario: unknown turn_model {turn_model!r}; "
@@ -226,7 +249,22 @@ class ScenarioSpec:
                 if doc.get("goal_heading_deg") is None
                 else float(doc["goal_heading_deg"])
             ),
+            speed_envelope=(
+                None
+                if doc.get("speed_envelope") is None
+                else dict(doc["speed_envelope"])
+            ),
+            start_speed_kt=(
+                None
+                if doc.get("start_speed_kt") is None
+                else float(doc["start_speed_kt"])
+            ),
             description=doc.get("description", ""),
+            # The document's own version is preserved rather than stamped with
+            # the current one: a round trip must not silently promote a
+            # Milestone 1 document into a schema whose defaults it was never
+            # written for.
+            schema_version=version,
         )
 
     @staticmethod
@@ -393,6 +431,47 @@ def build_weights(doc: dict[str, float]) -> CostWeights:
     return CostWeights(**{k: float(v) for k, v in doc.items()})
 
 
+def build_speed_envelope(doc: dict[str, Any], cruise_tas_kt: float) -> SpeedEnvelope:
+    """Build a :class:`~atp.aircraft.envelope.SpeedEnvelope` from a document.
+
+    ``cruise_tas_kt`` defaults to the aircraft's own cruise TAS, so a scenario
+    that lists planning speeds without naming a cruise speed keeps the aircraft's
+    operating point -- and therefore keeps Milestone 2 comparability.
+    """
+    _reject_unknown(
+        doc,
+        {
+            "planning_tas_kt",
+            "cruise_tas_kt",
+            "min_cas_kt",
+            "max_cas_kt",
+            "max_mach",
+            "name",
+        },
+        "speed_envelope",
+    )
+    speeds = tuple(
+        float(v) for v in _require(doc, "planning_tas_kt", "speed_envelope")
+    )
+    cruise = float(doc.get("cruise_tas_kt", cruise_tas_kt))
+
+    def optional(key: str) -> float | None:
+        value = doc.get(key)
+        return None if value is None else float(value)
+
+    try:
+        return SpeedEnvelope(
+            planning_tas_kt=speeds,
+            cruise_tas_kt=cruise,
+            min_cas_kt=optional("min_cas_kt"),
+            max_cas_kt=optional("max_cas_kt"),
+            max_mach=optional("max_mach"),
+            name=str(doc.get("name", "scenario-envelope")),
+        )
+    except ValueError as error:
+        raise ScenarioError(f"speed_envelope: {error}") from error
+
+
 def build_aircraft(name: str) -> AircraftPerformance:
     if name not in AIRCRAFT_LIBRARY:
         raise ScenarioError(
@@ -426,6 +505,18 @@ def _heading_index(
     return table.nearest_index_for_bearing(bearing_deg)
 
 
+def _speed_index(tas_kt: float | None, envelope: SpeedEnvelope) -> int | None:
+    if tas_kt is None:
+        return None
+    try:
+        return envelope.planning_tas_kt.index(float(tas_kt))
+    except ValueError:
+        raise ScenarioError(
+            f"scenario.start_speed_kt {tas_kt} is not one of the planning "
+            f"speeds {list(envelope.planning_tas_kt)}"
+        ) from None
+
+
 def build_scenario(spec: ScenarioSpec) -> BuiltScenario:
     grid = spec.grid.build()
     restrictions = build_restrictions(spec.restrictions)
@@ -437,6 +528,13 @@ def build_scenario(spec: ScenarioSpec) -> BuiltScenario:
         name=spec.name,
     )
     aircraft = build_aircraft(spec.aircraft)
+    if spec.speed_envelope is not None:
+        # Only the envelope is attached.  The aircraft's own ``cruise_tas_kt``
+        # is left alone on purpose: it is the speed the fuel-flow law is
+        # normalised at, and moving it with the envelope would rescale the
+        # performance model every time a scenario changed its speed set.
+        envelope = build_speed_envelope(spec.speed_envelope, aircraft.cruise_tas_kt)
+        aircraft = replace(aircraft, speed_envelope=envelope)
     if spec.max_bank_deg is not None:
         if not 0.0 < spec.max_bank_deg < 90.0:
             raise ScenarioError("scenario.max_bank_deg must lie in (0, 90)")
@@ -464,5 +562,6 @@ def build_scenario(spec: ScenarioSpec) -> BuiltScenario:
         allow_level_change_with_move=spec.allow_level_change_with_move,
         allow_pure_level_change=spec.allow_pure_level_change,
         start_heading_index=_heading_index(spec.start_heading_deg, table),
+        start_speed_index=_speed_index(spec.start_speed_kt, aircraft.envelope),
     )
     return BuiltScenario(spec, airspace, aircraft, cost_model, problem)

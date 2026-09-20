@@ -70,6 +70,12 @@ depends on them:
 
 ### `aircraft/`
 
+`envelope.py` (Milestone 3) is the speed envelope: the discrete planning speeds
+the search selects between, plus CAS and Mach operating limits that become an
+altitude-dependent TAS band through `core/atmosphere.py`. An aircraft that
+declares no envelope gets the singleton `{cruise_tas_kt}`, which is what makes
+Milestone 2 reduction structural rather than coincidental.
+
 `kinematics.py` solves the wind triangle and nothing else. `performance.py` is
 a frozen dataclass of coefficients plus the functions that consume them. The
 functional form is confined here: a BADA-style table could replace it behind the
@@ -158,12 +164,20 @@ Three invariants the search depends on:
    clamped so this cannot be violated);
 2. `speed_cost_lower_bound_per_nm()` never exceeds the time+fuel+risk cost per
    NM of horizontal progress, once `constant_cost_offset()` is given back.
-3. **Monotone refinement (Milestone 2).** No Milestone 2 refinement may lower the
-   cost of a transition relative to its Milestone 1 value. Turn modelling may add
-   cost or remove edges; it never adds or subtracts distance, and the geometric
-   shortening a fly-by produces is measured but never credited. This is what the
-   inherited-admissibility argument rests on, and
-   `tests/test_turn_cost.py` checks it edge by edge.
+3. **Monotone refinement of the turn model.** No turn modelling may lower the
+   cost of a transition relative to its no-turn value *at the same speed*. Turn
+   modelling may add cost or remove edges; it never adds or subtracts distance,
+   and the geometric shortening a fly-by produces is measured but never
+   credited. `tests/test_turn_cost.py` checks it edge by edge.
+
+   **Milestone 3 scopes this to the turn model and no further.** Milestone 2
+   could state it across milestones and inherit admissibility from it; that is
+   false once speed is a decision, because a faster selectable speed makes an
+   edge legitimately cheaper. The regression property that replaces it is
+   **fixed-speed parity** -- a singleton envelope at the Milestone 2 cruise speed
+   must reproduce Milestone 2 exactly -- and the heuristic lower bound is
+   re-derived over the envelope rather than inherited. See
+   `docs/milestone3_results.md` section 10.
 
 Infeasible transitions are reported as infeasible, never as "very expensive".
 
@@ -238,6 +252,24 @@ yields `GridState`, so parity is structural rather than coincidental. Derivation
 the feasibility frontier and the heuristic argument are in
 [`turn_model.md`](turn_model.md).
 
+## Milestone 3: speed
+
+Speed enters as `FlightState(ix, iy, il, ih, isp)`, where `isp` indexes the
+aircraft's speed envelope and denotes the speed flown on the leg that arrived at
+the cell. It is in the state for a correctness reason rather than for symmetry
+with `ih`: the bank limit constrains the change in *air heading*, and the air
+heading of a leg is recovered from the wind triangle as a function of the ground
+track, the wind **and the TAS**. Once speed can vary, `ih` alone stops being a
+sufficient statistic for the corner at the next node.
+
+The projection `pi` is unchanged and still drops everything but the cell, so
+`environment/`, `evaluation/` and `visualization/` learned nothing this
+milestone, and `planning/astar.py` still imports no aerospace module -- now
+including no atmosphere and no envelope. Derivations, evidence and limitations
+are in [`milestone3_results.md`](milestone3_results.md), with the requirement
+register in [`requirements_m3.md`](requirements_m3.md) and the
+requirement-to-evidence map in [`m3_traceability.md`](m3_traceability.md).
+
 ## MVP scope
 
 **In.** Airspace representation; aircraft and planning-problem representation;
@@ -254,7 +286,9 @@ rendering; a unit and integration test suite covering each of the above.
 | Any-angle smoothing (Theta*, post-hoc string pulling) | Removes grid bias, but the bias is currently *measurable*; it also *shortens* paths, which is exactly the operation that breaks invariant 3 and with it every admissibility flag |
 | A curvature-aware (Dubins) heuristic | The turn-then-tangent closed form was derived but its optimality for a *free* terminal heading was not proved, and an unproved lower bound is an unsound admissibility claim. See `turn_model.md` section 7 |
 | BADA-style performance tables | Licensing, and the current interface already accommodates a drop-in replacement |
-| Mass-varying fuel burn and step-climb optimisation | Requires a mass state and closes a feedback loop the MVP does not need |
+| Mass-varying fuel burn and step-climb optimisation | Requires a mass state and closes a feedback loop the MVP does not need; still deferred after Milestone 3, which deliberately keeps constant mass |
+| Acceleration dynamics between selected speeds | Milestone 3 abstracts the speed change as instantaneous and unpriced, and counts how often it happens rather than half-modelling it |
+| Compressibility drag rise near the Mach limit | Would change which fast speeds are worth selecting; the envelope's Mach limit removes the illegal ones, and the omission is recorded rather than hidden |
 | ARA*, JPS, bidirectional search, hierarchical abstraction | Worth doing once the baseline expansion counts are trusted |
 | Matplotlib / plotting output | Presentation concern; keeping the sole renderer dependency-free stops plotting libraries leaking into model code |
 | Real weather, terrain or traffic ingest | Would imply operational validity the project does not have |

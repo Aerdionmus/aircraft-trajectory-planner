@@ -39,6 +39,9 @@ def make_problem(
     max_bank_deg: float | None = None,
     start_heading: int | None = None,
     goal_heading: int | None = None,
+    speed_envelope=None,
+    start_speed: int | None = None,
+    allow_pure_level_change: bool = False,
 ) -> TrajectoryPlanningProblem:
     """Build a small planning problem; every component is overridable so that a
     test can isolate exactly one effect."""
@@ -59,6 +62,8 @@ def make_problem(
     airspace = Airspace(spec=spec, **kwargs)
     if max_bank_deg is not None:
         aircraft = replace(aircraft, max_bank_deg=max_bank_deg)
+    if speed_envelope is not None:
+        aircraft = replace(aircraft, speed_envelope=speed_envelope)
     model = CostModel(
         airspace,
         aircraft,
@@ -74,4 +79,6 @@ def make_problem(
             goal or GridState(cells - 1, cells - 1, 0), match_level, goal_heading
         ),
         start_heading_index=start_heading,
+        start_speed_index=start_speed,
+        allow_pure_level_change=allow_pure_level_change,
     )

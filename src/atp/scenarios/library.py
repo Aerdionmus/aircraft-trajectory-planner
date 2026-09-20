@@ -14,9 +14,20 @@ code path.  They are ordered by what they are designed to isolate:
                         risk price, not on the geometry.
 ``corridor-charge``     soft restriction: penalty versus detour.
 ``dense-restrictions``  search-effort stress case.
+``turn-limited-fixed-speed``  Milestone 3: turn-limited with an explicit
+                        single-speed envelope; the fixed-speed parity property
+                        in scenario form.
 ``turn-limited``        Milestone 2: a bank-limited aircraft must route around a
                         prohibited area that the direct track crosses, on a grid
                         coarse enough for a 45 degree turn to be flyable.
+``speed-choice``        Milestone 3: the same geometry with a multi-speed
+                        envelope, on a grid where every speed can turn, so the
+                        speed decision is a pure cost trade-off.
+``speed-choice-min-time``   the same instance priced for time alone.
+``speed-choice-min-fuel``   the same instance priced for fuel alone.
+``speed-turn-frontier`` Milestone 3: a grid fine enough that the fastest speeds
+                        cannot fly a 45 degree turn at all, so the speed
+                        decision changes *feasibility* rather than cost.
 
 ``random_scenario`` produces reproducible pseudo-random instances from an
 integer seed for scaling experiments.
@@ -27,6 +38,8 @@ from __future__ import annotations
 import math
 import random
 from typing import Any, Callable
+
+from dataclasses import replace
 
 from .spec import GridSpecDoc, ScenarioSpec
 
@@ -39,6 +52,38 @@ BASE_WEIGHTS: dict[str, float] = {
 }
 
 RISK_WEIGHTS: dict[str, float] = dict(BASE_WEIGHTS, risk_cost_per_exposure=15000.0)
+
+#: Milestone 3.  Identical to ``BASE_WEIGHTS`` except that fuel is priced at
+#: 3.0 cu/kg rather than 0.8.  The reason is stated rather than tuned silently:
+#: at 0.8 cu/kg the time price dominates across the whole shipped envelope and
+#: the cost-optimal speed sits on the fast boundary, so the trade-off exists but
+#: is not *visible* -- every experiment would report "pick the maximum". At 3.0
+#: the optimum is interior to the envelope, which is what makes the speed
+#: decision legible. This is a choice of operating point for a synthetic study,
+#: not a claim about any airline's cost index.
+SPEED_WEIGHTS: dict[str, float] = dict(BASE_WEIGHTS, fuel_cost_per_kg=3.0)
+
+#: Single-objective variants, used to show that the selected speed moves with
+#: the objective rather than being a property of the geometry.
+MIN_TIME_WEIGHTS: dict[str, float] = dict(
+    BASE_WEIGHTS, fuel_cost_per_kg=0.0, distance_cost_per_nm=0.0
+)
+MIN_FUEL_WEIGHTS: dict[str, float] = dict(
+    BASE_WEIGHTS, time_cost_per_hour=0.0, distance_cost_per_nm=0.0, fuel_cost_per_kg=3.0
+)
+
+#: The synthetic speed envelope the Milestone 3 scenarios plan with, as a
+#: scenario document.  It contains the Milestone 2 cruise TAS of 450 kt, so the
+#: old operating point stays selectable and the comparison stays anchored.
+#: Every number is synthetic; see ``atp.aircraft.envelope``.
+M3_ENVELOPE: dict[str, Any] = {
+    "name": "synthetic-jet-envelope",
+    "planning_tas_kt": [330.0, 360.0, 390.0, 420.0, 450.0, 480.0],
+    "cruise_tas_kt": 450.0,
+    "min_cas_kt": 200.0,
+    "max_cas_kt": 340.0,
+    "max_mach": 0.82,
+}
 
 
 def _grid(cells: int = 60, cell_nm: float = 5.0, levels: tuple[int, ...] = (300,)) -> GridSpecDoc:
@@ -286,6 +331,166 @@ def turn_limited_wind() -> ScenarioSpec:
     )
 
 
+def _speed_choice(name: str, weights: dict[str, float], description: str) -> ScenarioSpec:
+    """A smaller ``turn-limited``-style geometry with a multi-speed envelope.
+
+    Departure heading, turn model, aircraft, bank limit and the speed envelope
+    are identical across the three variants; the only difference between them
+    is the cost weights.  Holding everything else fixed is what makes the
+    comparison controlled.
+
+    **Grid size versus the turn-feasibility property.**  Whether a speed can
+    fly a given turn is a *per-cell* geometric fact -- it depends on
+    ``cell_nm`` and the bank angle, via ``R tan(dpsi/2) <= 0.5 * cell`` with
+    ``R = V^2 / (g tan phi)`` -- and not on how many cells the grid has.  12 NM
+    cells are retained for exactly that reason: at 25 degrees of bank the
+    fastest selectable speed, 480 kt, needs 2.98 NM of leg for a 45 degree
+    fly-by against the 6.00 NM a 12 NM cell provides, so **every** speed in the
+    envelope can fly every turn the grid offers, regardless of the grid's
+    extent.  Turn feasibility is therefore constant across the speed decision
+    here and cannot contaminate the cost comparison.  The scenario that varies
+    feasibility instead is ``speed-turn-frontier``.
+
+    The grid extent itself (13 cells of route) is kept small on purpose: a
+    library-wide reachability sweep floods every scenario's state space, and
+    that space is already multiplied by the number of speed options, so a
+    large grid here is the dominant cost of running the test suite for no
+    benefit to what the scenario demonstrates.  The restriction radius is
+    scaled to the same fraction of the route length as the original ``40``-cell
+    instance it replaced, so it still forces a comparable detour.
+    """
+    return ScenarioSpec(
+        name=name,
+        description=description,
+        grid=_grid(cells=10, cell_nm=12.0),
+        start=[1, 5, 0],
+        goal=[8, 5, 0],
+        start_heading_deg=90.0,
+        turn_model="gate+cost",
+        speed_envelope=dict(M3_ENVELOPE),
+        start_speed_kt=450.0,
+        restrictions=[
+            {
+                "type": "circle",
+                "id": "P-301",
+                "centre_nm": [54.0, 60.0],
+                "radius_nm": 14.0,
+            }
+        ],
+        weights=dict(weights),
+        schema_version=3,
+    )
+
+
+def speed_choice() -> ScenarioSpec:
+    return _speed_choice(
+        "speed-choice",
+        SPEED_WEIGHTS,
+        "Multi-speed envelope on the turn-limited geometry; every speed can "
+        "fly every turn, so speed is a pure time/fuel cost trade-off.",
+    )
+
+
+def speed_choice_min_time() -> ScenarioSpec:
+    return _speed_choice(
+        "speed-choice-min-time",
+        MIN_TIME_WEIGHTS,
+        "speed-choice priced for time alone; the cost-optimal speed should sit "
+        "at the fast end of the envelope.",
+    )
+
+
+def speed_choice_min_fuel() -> ScenarioSpec:
+    return _speed_choice(
+        "speed-choice-min-fuel",
+        MIN_FUEL_WEIGHTS,
+        "speed-choice priced for fuel alone; the cost-optimal speed should sit "
+        "near the best-specific-range speed, not at either boundary.",
+    )
+
+
+def turn_limited_fixed_speed() -> ScenarioSpec:
+    """``turn-limited`` with the Milestone 2 operating point stated explicitly.
+
+    Identical to ``turn-limited`` in every respect except that it declares a
+    schema-3 speed envelope containing exactly one speed, 450 kt -- the TAS the
+    aircraft flew implicitly in Milestone 2.  It therefore exercises the
+    Milestone 3 code path (envelope lookup, speed resolution, speed-indexed
+    evaluation) while offering no decision to make, and must reproduce
+    ``turn-limited`` exactly.
+
+    This is the fixed-speed parity property in scenario form, so that parity is
+    visible in an experiment table and not only inside a test.  The automated
+    check is ``tests/test_m2_fixed_speed_parity.py``.
+    """
+    return replace(
+        turn_limited(),
+        name="turn-limited-fixed-speed",
+        description="turn-limited with an explicit single-speed {450 kt} "
+        "envelope; the Milestone 2 operating point as a Milestone 3 scenario.",
+        speed_envelope={
+            "name": "m2-operating-point",
+            "planning_tas_kt": [450.0],
+            "cruise_tas_kt": 450.0,
+        },
+        schema_version=3,
+    )
+
+
+def speed_turn_frontier() -> ScenarioSpec:
+    """A grid fine enough that speed decides whether a turn exists at all.
+
+    The fly-by tangent fit needs ``R tan(dpsi/2)`` of leg on each side with
+    ``R = V^2 / (g tan phi)``, and on an 8-connected grid a 45 degree turn
+    always joins an axis leg to a diagonal one, so the binding length is half a
+    cell.  Solving for the speed at which a 45 degree turn stops fitting on a
+    5 NM cell at 25 degrees of bank:
+
+        V* = sqrt(0.5 * cell * g * tan(phi) / tan(22.5 deg))
+
+    which is about 439.5 kt.  Of the shipped envelope, 330/360/390/420 kt are
+    below it and 450/480 kt are above, so the Milestone 2 cruise speed cannot
+    turn here at all and the slower options can.  The threshold is *derived*
+    here and *measured* from the implementation in
+    ``tests/test_m3_experiments.py``; neither number is asserted from the
+    other.
+
+    A 90 degree turn on the same grid needs ``R`` itself, giving a second
+    threshold at about 282.8 kt -- below every speed in the envelope, so no
+    90 degree turn is flyable here at any selectable speed.  That is a
+    prediction the frontier test also checks.
+
+    Like ``speed-choice``, this threshold is a *per-cell* fact and does not
+    depend on the grid's extent, only on ``cell_nm``.  The extent (13 cells of
+    route) is kept small so a library-wide reachability sweep -- whose state
+    space is already multiplied by the number of speed options -- stays cheap;
+    the restriction radius is scaled to the same fraction of the route length
+    as the larger instance it replaced.
+    """
+    return ScenarioSpec(
+        name="speed-turn-frontier",
+        description="5 NM grid on which only the slower half of the speed "
+        "envelope can fly a 45 degree turn; speed decides feasibility.",
+        grid=_grid(cells=10, cell_nm=5.0),
+        start=[1, 5, 0],
+        goal=[8, 5, 0],
+        start_heading_deg=90.0,
+        turn_model="gate+cost",
+        speed_envelope=dict(M3_ENVELOPE),
+        start_speed_kt=450.0,
+        restrictions=[
+            {
+                "type": "circle",
+                "id": "P-401",
+                "centre_nm": [22.5, 25.0],
+                "radius_nm": 6.0,
+            }
+        ],
+        weights=dict(BASE_WEIGHTS),
+        schema_version=3,
+    )
+
+
 SCENARIO_LIBRARY: dict[str, Callable[[], ScenarioSpec]] = {
     "empty-cruise": empty_cruise,
     "two-no-fly": two_no_fly,
@@ -296,6 +501,11 @@ SCENARIO_LIBRARY: dict[str, Callable[[], ScenarioSpec]] = {
     "dense-restrictions": dense_restrictions,
     "turn-limited": turn_limited,
     "turn-limited-wind": turn_limited_wind,
+    "turn-limited-fixed-speed": turn_limited_fixed_speed,
+    "speed-choice": speed_choice,
+    "speed-choice-min-time": speed_choice_min_time,
+    "speed-choice-min-fuel": speed_choice_min_fuel,
+    "speed-turn-frontier": speed_turn_frontier,
 }
 
 

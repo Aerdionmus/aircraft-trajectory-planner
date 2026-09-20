@@ -1,0 +1,12 @@
+{
+  "name": "m3-objective-sensitivity",
+  "scenarios": [
+    "speed-choice",
+    "speed-choice-min-time",
+    "speed-choice-min-fuel"
+  ],
+  "heuristics": ["optimistic"],
+  "weights": [1.0],
+  "include_baseline": false,
+  "max_expansions": 400000
+}

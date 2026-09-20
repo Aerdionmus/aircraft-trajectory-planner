@@ -16,6 +16,13 @@ Every number in this repository is synthetic.
   *representative* figures chosen to be in the right order of magnitude. They
   are not manufacturer data, not from a certified performance manual, and not
   from BADA.
+- **Speed envelopes (Milestone 3)** are synthetic in exactly the same sense: the
+  planning speeds, the CAS limits and the Mach limit are invented representative
+  figures, not a `Vmo`/`Mmo` from any aeroplane flight manual.
+- **The atmosphere (Milestone 3)** is the opposite case and is called out so the
+  two are not confused: the ISA constants are *defining values of a standard*,
+  not measurements and not a weather product. There is no forecast, no GRIB, no
+  ISA deviation and no temperature offset anywhere in the package.
 - Wind fields are analytic constructions (uniform, layered, Rankine vortex).
   They are not a forecast product and are not derived from GRIB or any NWP
   output.
@@ -43,15 +50,39 @@ Every number in this repository is synthetic.
 
 - **Point mass at constant mass.** Fuel burn does not reduce weight, so there is
   no weight/fuel-flow feedback and no mass-driven step-climb optimisation.
-- **Single commanded TAS per level**, independent of mass and temperature. No
-  Mach or CAS schedule, no ISA deviation, no buffet boundary, no
-  thrust-limited ceiling (only a hard `service_ceiling_ft`).
+- **Speed (Milestone 3).** The aircraft carries a discrete speed envelope and
+  the planner selects a TAS per segment. An aircraft that declares no envelope
+  keeps the single commanded TAS of Milestone 1/2 exactly. There is still no
+  Mach or CAS *schedule* (the planner picks a TAS; it does not fly a climb or
+  cruise schedule), no ISA deviation, no buffet boundary and no thrust-limited
+  ceiling beyond `service_ceiling_ft` and the envelope's own CAS/Mach limits.
+- **Speed changes are instantaneous, unpriced and unbounded**, and may occur only
+  at nodes. No acceleration or deceleration dynamics are modelled, so a
+  trajectory containing speed changes is optimistic in both time and fuel by an
+  amount this package does not estimate. `speed_changes` counts how often the
+  abstraction is used so the exposure is measurable per trajectory. This is not
+  a flight-control law and not an autothrottle model.
 - **Fuel flow varies linearly with altitude** about a reference level. Real
   specific fuel consumption is not linear in altitude; the linear term encodes
-  only the qualitative "higher is more efficient" trend.
+  only the qualitative "higher is more efficient" trend. Milestone 3 multiplies
+  that inherited altitude trend by a speed factor `(1-b)x^3 + b/x` normalised at
+  the aircraft's reference TAS; the two effects are separable and neither is
+  fitted to produce a desired route. There is **no compressibility drag rise**,
+  so the fastest legal speeds are modelled as cheaper than they would be.
 - **Climb and descent** are charged a fixed fuel delta per 1000 ft on top of the
   cruise burn for the time spent, and limited by a constant maximum vertical
   rate. There is no thrust/drag integration and no climb-speed schedule.
+- **Turn dynamics and speed (Milestone 3).** Turn radius and turn rate are
+  evaluated at the *selected* TAS, so the radius scales with `V^2` and the turn
+  rate with `1/V`. A corner joining two legs at different speeds has each leg's
+  air heading solved at that leg's own TAS, and the turn itself is charged at the
+  faster of the two -- conservative with respect to the *modelled* turn geometry
+  at that discrete speed pair (larger radius, over-blocks; lower turn rate,
+  upper bound on the charge), but not a physically validated bound on the
+  unmodelled acceleration or deceleration manoeuvre a real aircraft would fly
+  between the two speeds, which this package does not model at all (see the
+  speed-change limitation above). With one selectable speed this reduces
+  exactly to the Milestone 2 expressions.
 - **Turn dynamics (Milestone 2).** With `turn_model: "none"` -- the default, and
   what every Milestone 1 scenario uses -- the paragraph below still holds
   verbatim. With `gate` or `gate+cost`, heading enters the state as an index into
@@ -125,6 +156,13 @@ The heuristic is admissible **under the assumptions above** — specifically tha
 `RiskField.min_density()` a sound lower bound. If a custom field implements
 either incorrectly, A* silently loses its optimality guarantee. Any new field
 should be added to the bound-sampling test in `tests/test_wind.py`.
+
+Admissibility in Milestone 3 is **re-derived** rather than inherited. The
+Milestone 2 argument rested on no refinement ever lowering an edge cost; allowing
+the planner to choose a faster speed breaks that by design, so the lower bound is
+recomputed as a minimisation over the whole speed envelope. The derivation is in
+`atp.planning.cost.CostModel.speed_cost_lower_bound_per_nm` and the evidence in
+`docs/milestone3_results.md` section 10.
 
 Admissibility also depends on the aircraft model: the fuel lower bound assumes a
 climb costs at least as much fuel as the matching descent refunds. A performance

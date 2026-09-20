@@ -32,6 +32,15 @@ NM_PER_FT: float = 1.0 / FT_PER_NM
 MIN_PER_H: float = 60.0
 S_PER_H: float = 3600.0
 
+#: SI bridge.  The package works in NM/ft/kt/h, but the ISA constants in
+#: :mod:`atp.core.atmosphere` are only quoted in SI, so exactly one conversion
+#: boundary exists and it lives here.  ``M_PER_FT`` is exact by definition
+#: (``M_PER_NM / FT_PER_NM == 0.3048``).
+M_PER_NM: float = 1852.0
+M_PER_FT: float = M_PER_NM / FT_PER_NM
+MPS_PER_KT: float = M_PER_NM / S_PER_H
+KT_PER_MPS: float = 1.0 / MPS_PER_KT
+
 #: Flight levels are quoted in hundreds of feet (FL300 == 30000 ft).
 FT_PER_FLIGHT_LEVEL: float = 100.0
 
@@ -72,3 +81,11 @@ def hours_to_seconds(hours: float) -> float:
 
 def fpm_to_ft_per_hour(rate_fpm: float) -> float:
     return rate_fpm * MIN_PER_H
+
+
+def mps_to_kt(speed_mps: float) -> float:
+    return speed_mps * KT_PER_MPS
+
+
+def kt_to_mps(speed_kt: float) -> float:
+    return speed_kt * MPS_PER_KT

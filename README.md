@@ -171,6 +171,20 @@ atp plan --scenario turn-limited --with-baseline --with-analytic-baseline
 # force turn dynamics onto any scenario, overriding the bank limit
 atp plan --scenario two-no-fly --turn-model gate+cost --bank-deg 30
 
+# Milestone 3: speed as a decision variable
+atp plan --scenario speed-choice --with-baseline
+
+# pin a fixed-speed arm (the Milestone 2 operating point)
+atp plan --scenario speed-choice --speeds 450
+
+# the grid where only the slower half of the envelope can turn at all
+atp plan --scenario speed-turn-frontier
+atp plan --scenario speed-turn-frontier --speeds 450   # reports unsolvable
+
+# the Milestone 3 experiments
+atp experiment --config configs/experiment_m3_speed_sweep.json    --output-dir results
+atp experiment --config configs/experiment_m3_turn_frontier.json  --output-dir results
+
 # the turn-model ablation (none / gate / gate+cost)
 atp experiment --config configs/experiment_turn_ablation.json --output-dir results
 
@@ -209,6 +223,12 @@ results file captured from the frozen commit. `tests/test_turn_geometry.py`,
 `tests/test_turn_cost.py`, `tests/test_admissibility_m2.py` and
 `tests/test_m2_experiments.py` cover Milestone 2.
 
+`tests/test_atmosphere.py`, `tests/test_speeds.py`,
+`tests/test_speed_envelope.py`, `tests/test_speed_performance.py`,
+`tests/test_speed_state.py`, `tests/test_admissibility_m3.py`,
+`tests/test_m2_fixed_speed_parity.py` and `tests/test_m3_experiments.py` cover
+Milestone 3.
+
 `tests/test_audit_regressions.py` pins the specific defects found in the
 Milestone 1 audit: the two heuristic-admissibility failures (vertical distance
 charged at the speed-derived rate, and descent fuel credits), the corridor
@@ -231,9 +251,9 @@ restriction scenarios, so it is a compliance comparison there, not a cost one.
 
 ```text
 src/atp/
-  core/           units and dependency-free 2D geometry
+  core/           units, dependency-free 2D geometry, ISA atmosphere, airspeeds
   environment/    airspace grid, wind, risk and restricted regions
-  aircraft/       performance coefficients, the wind triangle, turn geometry
+  aircraft/       performance coefficients, wind triangle, turn geometry, speed envelope
   planning/       search problem, flight state, cost model, heuristics, A*
   baselines/      direct-route and analytic straight-line references
   evaluation/     trajectory scoring, independent of the planner
@@ -241,7 +261,8 @@ src/atp/
   experiments/    deterministic runner, CSV/JSON output
   visualization/  ASCII rendering (no plotting dependency)
 configs/          example scenario and experiment documents
-docs/             architecture, assumptions and the turn model
+docs/             architecture, assumptions, turn model, milestone results,
+                  M3 requirements and traceability
 tests/            unit and integration tests
 ```
 
@@ -266,6 +287,42 @@ That invariant is what lets the Milestone 1 heuristics keep their admissibility
 and consistency declarations over the larger state space; it is proved in the docs
 and checked edge by edge in the tests.
 
+## Speed
+
+Milestone 3 makes speed a planning decision rather than a constant. The aircraft
+carries a synthetic **speed envelope** — a discrete set of selectable true
+airspeeds plus CAS and Mach operating limits — and the limits become an
+altitude-dependent TAS band through an ISA atmosphere model, so the set of speeds
+the planner may choose genuinely changes with altitude.
+
+Speed enters the state as `FlightState(ix, iy, il, ih, isp)`. It is there for a
+correctness reason: a bank limit constrains the change in *air heading*, and air
+heading depends on TAS through the wind triangle, so once speed can vary the
+heading index alone is no longer a sufficient statistic for the next corner.
+
+The decision is real, and it cuts two ways.
+
+**Cost.** On a 12 NM grid where every speed can fly every turn, the fixed-speed
+arms span 34% in time (13.9 to 18.5 min) and 34% in fuel (500 to 673 kg). Which
+speed is cheapest depends on what you are buying: minimum time selects the fast
+end of the envelope, minimum fuel selects near best specific range, and pricing
+both selects something in between. That falls out of the power-required curve
+rather than being imposed by a penalty term.
+
+**Feasibility.** Turn radius grows with `V^2`, so on a 5 NM grid at 25 degrees of
+bank the 45 degree turn stops fitting above about 439.5 kt — a threshold derived
+analytically and then measured from the implementation's own gate. The Milestone
+2 cruise speed of 450 kt is on the wrong side of it: `speed-turn-frontier`
+reports **unsolvable** at a fixed 450 kt and solves with the envelope available,
+by slowing for the corners and speeding up on the straights.
+
+An aircraft that declares no envelope gets the singleton `{cruise_tas_kt}`, so
+every Milestone 1 and 2 scenario is untouched. The Milestone 2 monotone-refinement
+invariant (`c2 >= c1`) is **deliberately retired** — a faster selectable speed
+makes an edge legitimately cheaper — and admissibility is re-derived over the
+envelope rather than inherited. See
+[`docs/milestone3_results.md`](docs/milestone3_results.md).
+
 ## Status
 
 Milestone 1 (MVP) is complete and frozen: airspace and problem representation,
@@ -280,6 +337,14 @@ reference, turn-model / bank-angle / connectivity experiment axes and
 trajectory-shape metrics. `tests/test_milestone1_parity.py` replays an experiment
 matrix captured from the frozen Milestone 1 commit and requires every
 deterministic column to reproduce exactly.
+
+Milestone 3 is complete: ISA atmosphere, TAS/CAS/Mach conversions, the speed
+envelope, speed in the planning state, speed-dependent fuel flow and turn
+geometry, a re-derived admissible heuristic, the speed-sweep and
+feasibility-frontier experiments, and a lightweight requirements register with a
+traceability matrix. Fixed-speed parity against Milestone 2 is exact — path,
+cost, metrics **and** expansion counts — and is gated by
+`tests/test_m2_fixed_speed_parity.py`.
 
 A curvature-aware (Dubins) heuristic was designed but **not** shipped: its
 admissibility could not be proved within the milestone, and an unproved lower

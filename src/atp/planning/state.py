@@ -1,9 +1,10 @@
-"""Heading-augmented planner state.
+"""Heading- and speed-augmented planner state.
 
 Milestone 1's state is :class:`~atp.environment.airspace.GridState`, the triple
-``(ix, iy, il)``.  Milestone 2 adds a heading index, giving::
+``(ix, iy, il)``.  Milestone 2 adds a heading index and Milestone 3 a speed
+index, giving::
 
-    FlightState(ix, iy, il, ih)
+    FlightState(ix, iy, il, ih, isp)
 
 ``ih`` is an **index into** :attr:`~atp.environment.airspace.GridSpec.moves`,
 denoting the ground track just flown to arrive at the cell -- not an
@@ -27,11 +28,37 @@ headings alternate 26.565 and 18.435 degree steps rather than sitting at
 ``360 / 16 = 22.5``.  :class:`TurnTable` therefore computes every angle from the
 actual move vectors and never from ``2 pi |i - j| / K``.
 
+Why speed has to be in the state (Milestone 3)
+----------------------------------------------
+``isp`` indexes :attr:`~atp.aircraft.envelope.SpeedEnvelope.planning_tas_kt` and
+denotes the speed flown on the leg that *arrived* at the cell -- exactly
+parallel to ``ih``, which denotes the track flown to arrive at it.
+
+It is there for a correctness reason, not for symmetry.  The bank limit
+constrains the change in **air heading**, and the air heading of a leg is
+recovered from the wind triangle as a function of the commanded ground track,
+the wind *and the true airspeed*.  Two legs flown along the same ground track at
+different TAS have different air headings, so once speed can vary, ``ih`` alone
+is no longer a sufficient statistic for the corner at the next node: the pair
+``(ih, isp)`` is.  Dropping ``isp`` would make the turn gate and the turn charge
+depend on information outside the state, which
+:class:`~atp.planning.problem.SearchProblem` forbids and which would silently
+invalidate both the search and the admissibility argument.
+
+The coupling vanishes in still air, where air heading and ground track coincide;
+it is real in any wind.  ``tests/test_speed_state.py`` pins a concrete case.
+
+**[LIMITATION]** With ``turn_model="none"`` no corner is ever evaluated, so
+``isp`` is not load-bearing there and merely multiplies the state space by the
+number of speed options.  The representation is kept uniform anyway -- one state
+type, one successor generator -- and the cost of that choice is measured rather
+than argued about; see ``docs/milestone3_results.md``.
+
 Projection
 ----------
 :func:`cell_of` is the projection ``pi: FlightState -> GridState`` used by every
 environment, restriction, risk, blocking-cache and evaluation call, so nothing
-below ``planning/`` learns about heading.
+below ``planning/`` learns about heading or speed.
 """
 
 from __future__ import annotations
@@ -47,14 +74,29 @@ from ..environment.airspace import GridState
 #: out of it and no gate is ever applied to it.
 NO_HEADING: int = -1
 
+#: Default speed index.  There is deliberately **no** ``NO_SPEED`` sentinel to
+#: match ``NO_HEADING``: a speed index is only ever consulted to recover the air
+#: heading of an *incoming* leg, and a state with no incoming leg has no corner
+#: to evaluate, so the value is never read.  Adding a second sentinel would mean
+#: a second unreachable branch in every consumer for no behavioural difference.
+DEFAULT_SPEED_INDEX: int = 0
+
 
 class FlightState(NamedTuple):
-    """Horizontal cell, flight level, and the index of the move just flown."""
+    """Horizontal cell, flight level, the move just flown, and the speed it was
+    flown at.
+
+    ``isp`` defaults to ``0`` so that a four-argument construction keeps its
+    Milestone 2 meaning: with a singleton speed envelope the only valid index
+    *is* ``0``, so ``FlightState(ix, iy, il, ih)`` and
+    ``FlightState(ix, iy, il, ih, 0)`` are the same tuple and compare equal.
+    """
 
     ix: int
     iy: int
     il: int
     ih: int = NO_HEADING
+    isp: int = 0
 
     @property
     def cell(self) -> GridState:

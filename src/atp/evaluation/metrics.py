@@ -16,6 +16,25 @@ and :attr:`TrajectoryEvaluation.comparable_cost` is ``inf`` unless the whole
 trajectory is feasible.  Comparisons between planners must use
 ``comparable_cost``, never ``cost.total``.
 
+Speed (Milestone 3)
+-------------------
+Heading is *recomputed* here from the cell sequence and the planner's heading
+index is ignored, because heading is a geometric consequence of the route.
+**Speed is not.**  It is a decision, and a decision is part of the trajectory in
+exactly the way the cell sequence is -- two trajectories through the same cells
+at different speeds are different trajectories with different fuel and different
+turn geometry.  So the speed schedule is *read off* the trajectory
+(``FlightState.isp`` on each state, i.e. the speed flown on the leg that arrived
+at it) rather than reconstructed, and any state that carries none -- every
+baseline, and every Milestone 1/2 path -- is scored at the envelope's cruise
+speed, the reference operating point.
+
+This does not weaken the property that A*, Dijkstra and both baselines are
+scored by identical code: the same function, with the same cost model, prices
+whatever (cells, speeds) pair it is handed.  What it does mean is that a
+baseline is a *fixed-speed* reference even when the planner had a choice, which
+is the honest comparison -- the baseline has no mechanism for choosing.
+
 Turns
 -----
 A corner is a property of three consecutive states, not two, so turn effects are
@@ -89,6 +108,23 @@ class TrajectoryEvaluation:
     #: Segments dropped from the totals because they violate a hard constraint.
     unpriced_segments: int = 0
     mean_ground_speed_kt: float = 0.0
+    #: Distance-weighted mean of the TAS actually flown.
+    mean_tas_kt: float = 0.0
+    min_tas_kt: float = 0.0
+    max_tas_kt: float = 0.0
+    #: Number of segment boundaries at which the selected speed changed,
+    #: counting **every** consecutive pair of segments -- horizontal-to-
+    #: horizontal, horizontal-to-level, or level-to-horizontal alike -- not
+    #: only transitions between two horizontal legs.  A speed change made
+    #: entirely *during* a pure level segment, with the horizontal legs on
+    #: either side of it left unchanged, still counts: the aircraft genuinely
+    #: changed speed once, at that node, and this field is meant to reflect
+    #: that regardless of which kind of segment the change happened on.  Like
+    #: ``geometric_corners`` this describes the shape of the returned
+    #: trajectory, so it counts the whole sequence rather than only the priced
+    #: part.  It is the count of instantaneous speed changes the model grants
+    #: for free; see the limitation recorded in :mod:`atp.planning.problem`.
+    speed_changes: int = 0
     cost: CostBreakdown = field(default_factory=CostBreakdown)
     hard_violations: list[str] = field(default_factory=list)
     infeasible_reason: str = ""
@@ -129,6 +165,10 @@ class TrajectoryEvaluation:
             "turn_fuel_kg": self.turn_fuel_kg,
             "corner_cut_nm": self.corner_cut_nm,
             "mean_ground_speed_kt": self.mean_ground_speed_kt,
+            "mean_tas_kt": self.mean_tas_kt,
+            "min_tas_kt": self.min_tas_kt,
+            "max_tas_kt": self.max_tas_kt,
+            "speed_changes": self.speed_changes,
             "hard_violations": list(self.hard_violations),
             "infeasible_reason": self.infeasible_reason,
             **{f"cost_{k}": v for k, v in self.cost.as_dict().items()},
@@ -175,11 +215,35 @@ def count_geometric_corners(
     return corners
 
 
+def speed_schedule_of(
+    cost_model: CostModel, path: list
+) -> list[int | None]:
+    """The speed flown on each leg of ``path``, one entry per segment.
+
+    ``None`` means "no speed was selected", which is what every Milestone 1/2
+    call site and every baseline produces; the cost model then evaluates at the
+    default commanded TAS and performs no envelope check, reproducing the
+    earlier behaviour exactly.
+
+    With a multi-speed envelope the schedule is read from ``FlightState.isp``,
+    the speed flown on the leg arriving at that state.  A state that carries no
+    speed index is scored at the envelope's cruise index.
+    """
+    if not cost_model.models_speed:
+        return [None] * max(0, len(path) - 1)
+    default = cost_model.default_speed_index
+    return [
+        getattr(state, "isp", default) for state in path[1:]
+    ]
+
+
 def evaluate_trajectory(
     cost_model: CostModel,
     path: list,
     *,
     start_move: tuple[int, int] | None = None,
+    start_speed_index: int | None = None,
+    speed_indices: list[int | None] | None = None,
 ) -> TrajectoryEvaluation:
     """Re-evaluate a state sequence against the cost model.
 
@@ -190,6 +254,12 @@ def evaluate_trajectory(
 
     Turns are evaluated only when the cost model declares a turn model, so a
     Milestone 1 call with two positional arguments is unchanged.
+
+    ``speed_indices`` overrides the schedule that would otherwise be read from
+    the path (see :func:`speed_schedule_of`); it exists so that a controlled
+    experiment can re-price an existing route at a different fixed speed.
+    ``start_speed_index`` is the speed of the notional leg arriving at the start,
+    used only to evaluate the departure corner when ``start_move`` is given.
     """
     cells = [cell_of(s) for s in path]
     if len(cells) < 2:
@@ -207,9 +277,22 @@ def evaluate_trajectory(
     climb_ft = 0.0
     reason = ""
     previous_move = start_move
+    schedule = (
+        speed_schedule_of(cost_model, path) if speed_indices is None else speed_indices
+    )
+    if len(schedule) != len(cells) - 1:
+        raise ValueError(
+            f"speed schedule has {len(schedule)} entries for "
+            f"{len(cells) - 1} segment(s)"
+        )
+    if start_speed_index is None and cost_model.models_speed:
+        start_speed_index = cost_model.default_speed_index
+    previous_speed = start_speed_index
+    speed_changes = 0
 
-    for a, b in zip(cells, cells[1:]):
+    for index, (a, b) in enumerate(zip(cells, cells[1:])):
         move = _move_of(a, b)
+        speed = schedule[index]
         turn = NO_TURN
         if cost_model.models_turns and move is not None and previous_move is not None:
             turn = cost_model.turn_metrics(
@@ -218,10 +301,49 @@ def evaluate_trajectory(
                 Vec2(float(move[0]), float(move[1])).normalized(),
                 math.hypot(*previous_move) * cell_size,
                 math.hypot(*move) * cell_size,
+                speed_index_in=previous_speed,
+                speed_index_out=speed,
             )
-        metrics = cost_model.with_turn(cost_model.evaluate(a, b), turn)
+        metrics = cost_model.with_turn(cost_model.evaluate(a, b, speed), turn)
+        # `speed_changes` counts every actual change in the selected speed
+        # between one segment and the next -- horizontal or pure level, either
+        # side -- because that is what the milestone's own abstraction grants
+        # for free (see `planning/problem.py`'s "Speed transitions" section):
+        # an instantaneous, unpriced speed change at *any* node, not only at
+        # nodes joining two horizontal legs. Gating this on `move is not None`
+        # (as the turn-eligibility check above still correctly does) would
+        # miss exactly the case where the change happens *during* a pure level
+        # segment and the horizontal legs on either side of it happen to match
+        # -- e.g. 450 kt horizontal, a level change selecting 330 kt, then a
+        # further horizontal leg still at 330 kt: one real speed change, at
+        # the level transition, invisible to a horizontal-to-horizontal
+        # comparison because the two horizontal legs never differ from each
+        # other. `index > 0` excludes only the very first segment, since
+        # `previous_speed` there is the notional speed of the start's
+        # incoming leg (used solely to price the departure corner), not a
+        # segment that was actually flown -- there is nothing for the first
+        # segment to have "changed" from.
+        if (
+            index > 0
+            and previous_speed is not None
+            and speed is not None
+            and speed != previous_speed
+        ):
+            speed_changes += 1
         if move is not None:
             previous_move = move
+        # `previous_speed` tracks the speed carried by the most recent state,
+        # so it updates on *every* segment -- including a pure level change,
+        # which has no track of its own but does update `FlightState.isp` in
+        # the planner (see `_successors_with_flight_state`'s pure-level-change
+        # branch). Gating this update on `move is not None`, as `previous_move`
+        # is gated, would leave a level-change segment's speed selection
+        # invisible to the next horizontal leg's turn evaluation: the corner
+        # would be priced at the speed flown *before* the level change instead
+        # of the speed the aircraft actually carries into it, disagreeing with
+        # the planner's own turn_metrics call for the identical transition.
+        if speed is not None:
+            previous_speed = speed
         if not metrics.feasible:
             violations.append(f"{a}->{b}: {metrics.infeasible_reason}")
             reason = reason or metrics.infeasible_reason
@@ -260,6 +382,10 @@ def evaluate_trajectory(
         turn_fuel_kg=total.turn_fuel_kg,
         corner_cut_nm=total.corner_cut_nm,
         mean_ground_speed_kt=total.ground_speed_kt,
+        mean_tas_kt=total.tas_kt,
+        min_tas_kt=total.min_tas_kt if math.isfinite(total.min_tas_kt) else 0.0,
+        max_tas_kt=total.max_tas_kt if math.isfinite(total.max_tas_kt) else 0.0,
+        speed_changes=speed_changes,
         cost=breakdown,
         hard_violations=violations,
         infeasible_reason=reason,

@@ -127,6 +127,12 @@ class ExperimentSpec:
     turn_models: list[str] = field(default_factory=list)
     bank_angles_deg: list[float] = field(default_factory=list)
     connectivities: list[int] = field(default_factory=list)
+    #: Milestone 3 ablation axis.  Each entry is a list of planning TAS values
+    #: that *replaces* the scenario's own speed envelope, keeping its operating
+    #: limits.  A single-element list is a fixed-speed arm; the whole list is
+    #: the free-choice arm.  Empty means "leave the scenario's envelope alone",
+    #: so an unmodified Milestone 1 or 2 experiment document is unaffected.
+    speed_sets: list[list[float]] = field(default_factory=list)
 
     @staticmethod
     def from_dict(doc: dict) -> "ExperimentSpec":
@@ -157,25 +163,69 @@ def _variants(spec: ExperimentSpec, base: ScenarioSpec) -> Iterable[ScenarioSpec
     turn_models = spec.turn_models or [base.turn_model]
     banks: list[float | None] = list(spec.bank_angles_deg) or [base.max_bank_deg]
     connectivities = spec.connectivities or [base.grid.connectivity]
+    speed_sets: list[list[float] | None] = list(spec.speed_sets) or [None]
     for turn_model in turn_models:
         for bank in banks:
             for connectivity in connectivities:
-                grid = replace(base.grid, connectivity=connectivity)
-                suffix = []
-                if len(turn_models) > 1:
-                    suffix.append(turn_model)
-                if len(banks) > 1:
-                    suffix.append(f"bank{bank:g}")
-                if len(connectivities) > 1:
-                    suffix.append(f"c{connectivity}")
-                name = base.name + ("[" + ",".join(suffix) + "]" if suffix else "")
-                yield replace(
-                    base,
-                    name=name,
-                    grid=grid,
-                    turn_model=turn_model,
-                    max_bank_deg=bank,
-                )
+                for speeds in speed_sets:
+                    grid = replace(base.grid, connectivity=connectivity)
+                    suffix = []
+                    if len(turn_models) > 1:
+                        suffix.append(turn_model)
+                    if len(banks) > 1:
+                        suffix.append(f"bank{bank:g}")
+                    if len(connectivities) > 1:
+                        suffix.append(f"c{connectivity}")
+                    if speeds is not None and len(speed_sets) > 1:
+                        suffix.append("sp" + "/".join(f"{v:g}" for v in speeds))
+                    name = base.name + ("[" + ",".join(suffix) + "]" if suffix else "")
+                    yield replace(
+                        base,
+                        name=name,
+                        grid=grid,
+                        turn_model=turn_model,
+                        max_bank_deg=bank,
+                        speed_envelope=_substitute_speeds(base, speeds),
+                        start_speed_kt=(
+                            base.start_speed_kt
+                            if speeds is None or base.start_speed_kt in speeds
+                            else None
+                        ),
+                    )
+
+
+def _substitute_speeds(
+    base: ScenarioSpec, speeds: list[float] | None
+) -> dict | None:
+    """Replace a scenario's planning speeds, keeping its operating limits.
+
+    The envelope's own ``cruise_tas_kt`` is set to the speed in the new set
+    closest to the base envelope's cruise speed, ties going to the slower, so
+    the reference selectable speed moves as little as the substitution allows
+    and the choice is deterministic.  This is only the *default selectable*
+    speed; the speed the fuel-flow law is normalised at belongs to the aircraft
+    and does not move at all (see
+    :attr:`atp.aircraft.performance.AircraftPerformance.reference_tas_kt`),
+    which is what keeps a fixed-speed sweep a controlled comparison.
+
+    Substituting speeds into a scenario that declares no envelope is refused
+    rather than guessed at: the operating limits would have to be invented.
+    """
+    if speeds is None:
+        return base.speed_envelope
+    if not speeds:
+        raise ValueError("a speed set must contain at least one speed")
+    if base.speed_envelope is None:
+        raise ValueError(
+            f"scenario {base.name!r} declares no speed_envelope, so the "
+            "speed_sets axis has no operating limits to preserve"
+        )
+    ordered = sorted(float(v) for v in speeds)
+    anchor = float(base.speed_envelope.get("cruise_tas_kt", ordered[0]))
+    cruise = min(ordered, key=lambda v: (abs(v - anchor), v))
+    return dict(
+        base.speed_envelope, planning_tas_kt=ordered, cruise_tas_kt=cruise
+    )
 
 
 def run_matrix(spec: ExperimentSpec) -> list[PlanReport]:

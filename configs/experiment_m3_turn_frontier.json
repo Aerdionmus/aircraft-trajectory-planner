@@ -1,0 +1,17 @@
+{
+  "name": "m3-turn-frontier",
+  "scenarios": ["speed-turn-frontier"],
+  "heuristics": ["optimistic"],
+  "weights": [1.0],
+  "speed_sets": [
+    [330.0],
+    [360.0],
+    [390.0],
+    [420.0],
+    [450.0],
+    [480.0],
+    [330.0, 360.0, 390.0, 420.0, 450.0, 480.0]
+  ],
+  "include_baseline": false,
+  "max_expansions": 400000
+}

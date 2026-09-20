@@ -330,11 +330,49 @@ at, `optimistic` remains the unconditionally-safe default, and
 omission cannot be lost. Closing the CS-optimality proof, or replacing it with a
 different provable curvature bound, is Milestone 3 work.
 
-## 8. Backward compatibility
+## 8. Speed (Milestone 3)
 
-With `turn_model: "none"` the Milestone 1 code path runs untouched: states are
-`GridState`, the successor set and its order are identical, and no turn is
-evaluated. Parity is therefore structural rather than coincidental, and it is
+Everything above is stated at a single true airspeed because Milestone 2 had
+one. Milestone 3 evaluates the same relations at the *selected* TAS, which
+changes nothing in the derivations and a great deal in the consequences: `R`
+scales with `V^2` and `omega` with `1/V`, so the speed decision moves turn
+feasibility faster than it moves anything else in the model.
+
+Two points specific to a corner joining legs at different speeds:
+
+- each leg's **air heading** is solved at that leg's own TAS, which is what makes
+  the pair `(ih, isp)` rather than `ih` alone the sufficient statistic for a
+  corner (see `planning/state.py`);
+- the **turn itself** is charged at `max(V_in, V_out)`. The model does not
+  resolve where in the speed transition the corner is flown, so charging the
+  faster of the two is conservative *with respect to the modelled turn radius
+  and turn rate at that discrete speed pair*: a larger radius (the gate
+  over-blocks, matching the bias documented in section 4) and a lower turn
+  rate (the charge is an upper bound). This is not a claim about the unmodelled
+  acceleration/deceleration manoeuvre a real aircraft would fly between the two
+  speeds -- that manoeuvre has no physical model here at all (see the
+  "Speed transitions" limitation in `planning/problem.py` and
+  `docs/assumptions.md`) and `max(V_in, V_out)` is not offered as a bound on it.
+
+The frontier table in section 5 is a slice of a larger surface at 450 kt. The
+general threshold for a `dpsi` turn on a grid of a given cell size is
+
+```
+V* = sqrt( 0.5 * cell * g * tan(phi) / tan(dpsi / 2) )
+```
+
+which reproduces that table (5 NM / 25 deg / 450 kt rejected, 5 NM / 30 deg
+accepted) and is measured against the implementation's own gate in
+`tests/test_m3_experiments.py`. The Dubins omission in section 7 is unchanged and
+if anything firmer: a curvature lower bound would now have to hold across the
+whole speed envelope.
+
+## 9. Backward compatibility
+
+With `turn_model: "none"` and a single-speed envelope -- the default for any
+aircraft that does not declare one -- the Milestone 1 code path runs untouched:
+states are `GridState`, the successor set and its order are identical, and no
+turn is evaluated. Parity is therefore structural rather than coincidental, and it is
 gated by `tests/test_milestone1_parity.py`, which replays an 80-row experiment
 matrix captured from commit `76e9c54` and requires every deterministic column to
 reproduce exactly.

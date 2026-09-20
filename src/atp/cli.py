@@ -49,6 +49,22 @@ def _apply_overrides(spec: ScenarioSpec, args: argparse.Namespace) -> ScenarioSp
         overrides["start_heading_deg"] = args.start_heading
     if getattr(args, "goal_heading", None) is not None:
         overrides["goal_heading_deg"] = args.goal_heading
+    if getattr(args, "speeds", None):
+        if spec.speed_envelope is None:
+            raise SystemExit(
+                f"scenario {spec.name!r} declares no speed_envelope, so --speeds "
+                "has no operating limits to preserve; pick a Milestone 3 scenario "
+                "or a scenario file that declares one"
+            )
+        speeds = sorted(float(v) for v in args.speeds)
+        anchor = float(spec.speed_envelope.get("cruise_tas_kt", speeds[0]))
+        overrides["speed_envelope"] = dict(
+            spec.speed_envelope,
+            planning_tas_kt=speeds,
+            cruise_tas_kt=min(speeds, key=lambda v: (abs(v - anchor), v)),
+        )
+        if spec.start_speed_kt is not None and spec.start_speed_kt not in speeds:
+            overrides["start_speed_kt"] = None
     return replace(spec, **overrides) if overrides else spec
 
 
@@ -80,6 +96,16 @@ def _add_scenario_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--goal-heading", type=float, help="required arrival true bearing"
+    )
+    parser.add_argument(
+        "--speeds",
+        type=float,
+        nargs="+",
+        metavar="TAS_KT",
+        help=(
+            "replace the scenario's planning speeds (TAS in knots), keeping its "
+            "operating limits; one value pins a fixed-speed arm"
+        ),
     )
 
 

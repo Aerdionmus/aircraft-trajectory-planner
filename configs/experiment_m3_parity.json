@@ -1,0 +1,9 @@
+{
+  "name": "m3-fixed-speed-parity",
+  "scenarios": ["turn-limited", "turn-limited-fixed-speed"],
+  "heuristics": ["zero", "optimistic", "octile"],
+  "weights": [1.0],
+  "include_baseline": true,
+  "include_analytic_baseline": true,
+  "max_expansions": 400000
+}

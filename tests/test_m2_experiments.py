@@ -43,9 +43,9 @@ CONFIGS = Path(__file__).parent.parent / "configs"
 
 
 # -- schema ------------------------------------------------------------------
-def test_schema_version_two_is_current_and_one_is_still_supported():
-    assert SCHEMA_VERSION == 2
-    assert SUPPORTED_SCHEMA_VERSIONS == (1, 2)
+def test_schema_version_three_is_current_and_earlier_ones_are_still_supported():
+    assert SCHEMA_VERSION == 3
+    assert SUPPORTED_SCHEMA_VERSIONS == (1, 2, 3)
 
 
 @pytest.mark.parametrize(
