@@ -24,7 +24,7 @@ from ..core.geometry import Vec2, ZERO
 
 
 class WindField(ABC):
-    """Interface for all wind models."""
+    """Static wind field interface."""
 
     name: str = "wind"
 
@@ -35,6 +35,25 @@ class WindField(ABC):
     @abstractmethod
     def max_magnitude_kt(self) -> float:
         """Sound upper bound on ``|at(...)|`` anywhere in the airspace."""
+
+
+class DynamicWindField(ABC):
+    """Time-dependent wind field interface evaluated at continuous mission time.
+
+    Dynamic fields intentionally do not inherit from :class:`WindField`; they are
+    not interchangeable with static wind models because a dynamic observer must
+    always choose a mission time explicitly.
+    """
+
+    @abstractmethod
+    def at_time(
+        self, x_nm: float, y_nm: float, altitude_ft: float, t_h: float
+    ) -> Vec2:
+        """Wind vector in knots at the given point and mission time ``t_h``."""
+
+    @abstractmethod
+    def max_magnitude_kt(self) -> float:
+        """Sound upper bound on ``|at_time(...)|`` anywhere in the airspace."""
 
 
 @dataclass(frozen=True)
@@ -134,3 +153,69 @@ class CompositeWind(WindField):
 
     def max_magnitude_kt(self) -> float:
         return math.fsum(f.max_magnitude_kt() for f in self.fields)
+
+
+@dataclass(frozen=True)
+class PeriodicWind(DynamicWindField):
+    """Deterministic synthetic periodic wind field.
+
+    The field is a superposition of:
+      - a constant vector background, and
+      - a spatially localised periodic modulation in both x/y and altitude.
+
+    The model is intentionally simple and analytically bounded:
+
+        W(x, y, h, t) = base + amp * sin(2*pi*t/T + phase(x, y, h)) * dir
+
+    where the modulation is deterministic, continuous in time, and bounded by
+    ``amp`` in each component.  The vector direction is chosen from the local
+    displacement relative to a centre, giving a predictable rotating/oscillating
+    jet-like flow without randomness or external data.
+    """
+
+    centre_nm: Vec2
+    base_vector_kt: Vec2
+    amplitude_kt: float
+    period_h: float
+    altitude_scale_ft: float
+    phase_offset: float = 0.0
+    name: str = "periodic"
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.period_h) or self.period_h <= 0.0:
+            raise ValueError("period_h must be finite and > 0")
+        if not math.isfinite(self.altitude_scale_ft) or self.altitude_scale_ft <= 0.0:
+            raise ValueError("altitude_scale_ft must be finite and > 0")
+        if not math.isfinite(self.amplitude_kt):
+            raise ValueError("amplitude_kt must be finite")
+        if not math.isfinite(self.phase_offset):
+            raise ValueError("phase_offset must be finite")
+        if not math.isfinite(self.base_vector_kt.x) or not math.isfinite(self.base_vector_kt.y):
+            raise ValueError("base_vector_kt components must be finite")
+        if not math.isfinite(self.centre_nm.x) or not math.isfinite(self.centre_nm.y):
+            raise ValueError("centre_nm coordinates must be finite")
+
+    def at_time(
+        self, x_nm: float, y_nm: float, altitude_ft: float, t_h: float
+    ) -> Vec2:
+        offset = Vec2(x_nm, y_nm) - self.centre_nm
+        radial = offset.normalized() if offset.norm() > 1e-9 else Vec2(0.0, 0.0)
+        phase = (
+            2.0
+            * math.pi
+            * (t_h / self.period_h)
+            + self.phase_offset
+            + offset.norm() / max(1.0, self.altitude_scale_ft / 1000.0)
+            + altitude_ft / self.altitude_scale_ft
+        )
+        modulation = math.sin(phase)
+        return self.base_vector_kt + radial * (modulation * self.amplitude_kt)
+
+    def max_magnitude_kt(self) -> float:
+        """A sound bound for the deterministic periodic flow.
+
+        The field is a base vector plus a bounded modulation with magnitude at most
+        ``amplitude_kt`` in the local radial direction, so the total magnitude is
+        bounded by ``|base| + amplitude_kt``.
+        """
+        return self.base_vector_kt.norm() + abs(self.amplitude_kt)
