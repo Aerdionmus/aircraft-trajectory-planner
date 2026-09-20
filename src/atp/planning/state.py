@@ -83,13 +83,15 @@ DEFAULT_SPEED_INDEX: int = 0
 
 
 class FlightState(NamedTuple):
-    """Horizontal cell, flight level, the move just flown, and the speed it was
-    flown at.
+    """Horizontal cell, flight level, the move just flown, the speed it was
+    flown at, and the planner time bucket.
 
     ``isp`` defaults to ``0`` so that a four-argument construction keeps its
     Milestone 2 meaning: with a singleton speed envelope the only valid index
     *is* ``0``, so ``FlightState(ix, iy, il, ih)`` and
     ``FlightState(ix, iy, il, ih, 0)`` are the same tuple and compare equal.
+    The additional ``k`` field preserves the M4.2 temporal state identity while
+    leaving the historic static M3 state layout otherwise unchanged.
     """
 
     ix: int
@@ -97,6 +99,7 @@ class FlightState(NamedTuple):
     il: int
     ih: int = NO_HEADING
     isp: int = 0
+    k: int = 0
 
     @property
     def cell(self) -> GridState:
