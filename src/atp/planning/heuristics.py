@@ -153,6 +153,23 @@ class EuclideanDistanceHeuristic(_GoalRelative):
         return self.problem.cost_model.weights.distance_cost_per_nm * d
 
 
+class DynamicOptimisticHeuristic(EuclideanDistanceHeuristic):
+    """Conservative lower bound for temporal/dynamic planning.
+
+    Dynamic wind and bucket time affect which transitions are available, but the
+    dynamic successor generator retains the existing physical cost model for
+    every accepted edge.  Therefore the distance price applied to straight-line
+    3D separation is a lower bound on every dynamic path, independently of
+    departure bucket, wind evolution, selected speed, or turn feasibility.
+
+    Deliberately omits time, fuel, risk, and turn terms: those terms require
+    dynamic-state-specific lower-bound proofs and are not needed for
+    admissibility.
+    """
+
+    name = "dynamic-optimistic"
+
+
 class OptimisticCostHeuristic(_GoalRelative):
     """Full-cost lower bound, decomposed as documented at the top of this module:
 
