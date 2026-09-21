@@ -12,13 +12,28 @@ export interface ScenarioDetail extends ScenarioSummary {
   grid: GridConfig;
   start: [number, number, number];
   goal: [number, number, number];
-  restrictions: unknown[];
+  restrictions: RestrictionDto[];
   aircraft: {
     name: string;
     cruise_tas_kt: number;
   };
   speed_options_kt: number[];
   supported_modes: string[];
+}
+
+export interface RestrictionDto {
+  type: "circle" | "polygon" | "corridor";
+  id: string;
+  centre_nm?: [number, number];
+  radius_nm?: number;
+  vertices_nm?: [number, number][];
+  start_nm?: [number, number];
+  end_nm?: [number, number];
+  half_width_nm?: number;
+  lower_ft?: number;
+  upper_ft?: number;
+  hard?: boolean;
+  penalty_per_nm?: number;
 }
 
 export interface GridConfig {

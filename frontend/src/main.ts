@@ -1,6 +1,7 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { createViewer, setInitialCamera } from "./cesium/viewer";
 import { playbackControls, renderTrajectory } from "./cesium/trajectory";
+import { clearOverlays, renderOverlays, setGridVisible, setRestrictionsVisible } from "./cesium/overlays";
 import { api } from "./api/client";
 import type { PlanRequest, PlanResponse, ScenarioSummary } from "./types/api";
 import "./styles.css";
@@ -15,11 +16,11 @@ app.innerHTML = `
       <div class="topbar-context">Flight planning workstation <span>·</span> M5.2.2</div>
     </header>
     <section class="workspace">
-      <section class="viewer"><div class="badge">SYNTHETIC PLANNING COORDINATE SYSTEM · LOCAL ENU<br><span>SYNTHETIC WIND VISUALIZATION · ORANGE VECTORS</span></div><div id="cesium-container"></div><div class="legend"><span><b class="dot origin"></b> Origin</span><span><b class="dot destination"></b> Destination</span><span><b class="line completed"></b> Completed route</span><span><b class="line remaining"></b> Remaining route</span><span><b class="arrow"></b> Synthetic wind</span></div><div class="playback"><button id="play-button" type="button" disabled>PLAY</button><button id="pause-button" type="button" disabled>PAUSE</button><button id="restart-button" type="button" disabled>RESTART</button><input id="timeline" type="range" min="0" max="0" step="0.01" value="0" disabled><span id="timeline-label">T+0.00 h</span></div></section>
+      <section class="viewer"><div class="badge">SYNTHETIC PLANNING COORDINATE SYSTEM · LOCAL ENU<br><span>SYNTHETIC WIND VISUALIZATION · ORANGE VECTORS</span></div><div id="cesium-container"></div><div class="legend"><span><b class="dot origin"></b> Origin</span><span><b class="dot destination"></b> Destination</span><span><b class="line completed"></b> Completed route</span><span><b class="line remaining"></b> Remaining route</span><span><b class="arrow"></b> Synthetic wind</span><span><b class="box restriction"></b> Restriction</span><span><b class="box grid-key"></b> Planning grid</span></div><div class="playback"><button id="play-button" type="button" disabled>PLAY</button><button id="pause-button" type="button" disabled>PAUSE</button><button id="restart-button" type="button" disabled>RESTART</button><input id="timeline" type="range" min="0" max="0" step="0.01" value="0" disabled><span id="timeline-label">T+0.00 h</span></div></section>
       <aside class="panel panel-right"><h2>FLIGHT / PLAN INFORMATION</h2><div id="current" class="current-readout">No trajectory loaded.</div><div id="metrics" class="subtle"></div></aside>
     </section>
     <section class="panel controls">
-      <div class="controls-heading"><h2>MISSION CONTROLS</h2><div id="status" class="status"></div></div>
+      <div class="controls-heading"><h2>MISSION CONTROLS</h2><div class="layer-controls"><label id="restrictions-control"><input id="restrictions-layer" type="checkbox" checked> <span id="restrictions-label">Restrictions</span></label><label><input id="grid-layer" type="checkbox"> Grid</label><span class="layer-disabled">Risk: aggregate only</span></div><div id="status" class="status"></div></div>
       <form id="plan-form">
         <div class="field"><label for="scenario">Scenario</label><select id="scenario"></select></div>
         <div class="field"><label for="mode">Mode</label><select id="mode"><option value="static">Static</option><option value="dynamic">Dynamic</option></select></div>
@@ -51,6 +52,11 @@ const timelineLabel = document.querySelector<HTMLSpanElement>("#timeline-label")
 const playButton = document.querySelector<HTMLButtonElement>("#play-button")!;
 const pauseButton = document.querySelector<HTMLButtonElement>("#pause-button")!;
 const restartButton = document.querySelector<HTMLButtonElement>("#restart-button")!;
+const restrictionsLayer = document.querySelector<HTMLInputElement>("#restrictions-layer")!;
+const restrictionsControl = document.querySelector<HTMLLabelElement>("#restrictions-control")!;
+const restrictionsLabel = document.querySelector<HTMLSpanElement>("#restrictions-label")!;
+const gridLayer = document.querySelector<HTMLInputElement>("#grid-layer")!;
+let loadedRestrictionCount = 0;
 
 function updateControls(): void {
   const dynamic = modeSelect.value === "dynamic";
@@ -128,17 +134,33 @@ function setPlaybackEnabled(enabled: boolean, durationH = 0): void {
   timeline.value = "0";
 }
 
+function updateRestrictionControl(): void {
+  const dynamic = modeSelect.value === "dynamic";
+  const unavailable = dynamic;
+  restrictionsLayer.disabled = unavailable || loadedRestrictionCount === 0;
+  restrictionsControl.title = unavailable
+    ? "Scenario restrictions are not part of the dynamic planner model"
+    : loadedRestrictionCount === 0
+      ? "No scenario restrictions"
+      : "";
+  restrictionsLabel.textContent = unavailable
+    ? "Restrictions unavailable in dynamic mode"
+    : "Restrictions";
+}
+
 async function loadScenarios(): Promise<void> {
   const scenarios: ScenarioSummary[] = await api.getScenarios();
   scenarioSelect.innerHTML = scenarios.map((scenario) => `<option value="${scenario.name}">${scenario.name}</option>`).join("");
 }
 
 document.querySelector("#mode")!.addEventListener("change", updateControls);
+document.querySelector("#mode")!.addEventListener("change", updateRestrictionControl);
 document.querySelector("#heuristic")!.addEventListener("change", updateControls);
 algorithmSelect.addEventListener("change", updateControls);
 document.querySelector("#plan-form")!.addEventListener("submit", async (event) => {
   event.preventDefault();
   button.disabled = true;
+  clearOverlays(viewer);
   status.textContent = "Planning trajectory…";
   status.className = "status";
   try {
@@ -147,6 +169,12 @@ document.querySelector("#plan-form")!.addEventListener("submit", async (event) =
     const durationH = Math.max(0, ...result.trajectory.map((point) => point.time_h ?? 0));
     setPlaybackEnabled(result.trajectory.some((point) => point.time_h !== null), durationH);
     renderTrajectory(viewer, result.trajectory, result, showCurrent);
+    const scenario = await api.getScenario(scenarioSelect.value);
+    loadedRestrictionCount = scenario.restrictions.length;
+    renderOverlays(viewer, modeSelect.value === "static" ? scenario.restrictions : [], scenario.grid);
+    updateRestrictionControl();
+    setRestrictionsVisible(viewer, restrictionsLayer.checked);
+    setGridVisible(viewer, gridLayer.checked);
     showMetrics(result);
     status.textContent = "Trajectory loaded";
   } catch (error) {
@@ -161,8 +189,11 @@ playButton.addEventListener("click", () => playbackControls().play());
 pauseButton.addEventListener("click", () => playbackControls().pause());
 restartButton.addEventListener("click", () => playbackControls().restart());
 timeline.addEventListener("input", () => playbackControls().scrub(Number(timeline.value)));
+restrictionsLayer.addEventListener("change", () => setRestrictionsVisible(viewer, restrictionsLayer.checked));
+gridLayer.addEventListener("change", () => setGridVisible(viewer, gridLayer.checked));
 
 updateControls();
+updateRestrictionControl();
 loadScenarios().catch((error: unknown) => {
   status.textContent = error instanceof Error ? error.message : "Unable to load scenarios";
   status.className = "status error";
