@@ -53,9 +53,12 @@ from dataclasses import dataclass
 from typing import Generic, Hashable, Iterable, Protocol, TypeVar
 
 from ..core.geometry import Vec2
+from ..core.temporal import TemporalConfig
 from ..environment.airspace import Airspace, GridState
+from ..environment.wind import DynamicWindField
 from .cost import NO_TURN, CostModel, SegmentMetrics
 from .state import NO_HEADING, FlightState, TurnTable, cell_of
+from .temporal import solve_modeled_traversal_duration
 
 S = TypeVar("S", bound=Hashable)
 
@@ -119,7 +122,15 @@ class TrajectoryPlanningProblem:
         max_level_step: int = 1,
         start_heading_index: int | None = None,
         start_speed_index: int | None = None,
+        temporal_config: TemporalConfig | None = None,
+        dynamic_wind: DynamicWindField | None = None,
     ) -> None:
+        if temporal_config is None and dynamic_wind is None:
+            pass
+        elif temporal_config is None or dynamic_wind is None:
+            raise ValueError(
+                "temporal_config and dynamic_wind must be provided together, or both omitted for static mode"
+            )
         if not airspace.in_bounds(start):
             raise ValueError(f"start state {start} is outside the airspace")
         if not airspace.in_bounds(goal.state):
@@ -130,6 +141,8 @@ class TrajectoryPlanningProblem:
         self.cost_model = cost_model
         self.start = start
         self.goal = goal
+        self.temporal_config = temporal_config
+        self.dynamic_wind = dynamic_wind
         self.allow_level_change_with_move = allow_level_change_with_move
         self.allow_pure_level_change = allow_pure_level_change
         self.max_level_step = max_level_step
@@ -192,12 +205,21 @@ class TrajectoryPlanningProblem:
 
     @property
     def uses_flight_state(self) -> bool:
-        """True when the state carries a heading, a speed, or both.
+        """True when the planner state must carry the expanded flight-state
+        identity, including the temporal bucket when dynamic mode is enabled.
 
         False means the Milestone 1 ``GridState`` successor generator runs
         untouched, which is what makes backward parity structural.
         """
-        return self.heading_aware or self.speed_aware
+        return self.heading_aware or self.speed_aware or self.temporal_aware
+
+    @property
+    def temporal_aware(self) -> bool:
+        return self.temporal_config is not None and self.dynamic_wind is not None
+
+    @property
+    def dynamic_environment(self) -> bool:
+        return self.temporal_aware
 
     @property
     def start_move(self) -> tuple[int, int] | None:
@@ -226,6 +248,7 @@ class TrajectoryPlanningProblem:
             if (self.heading_aware and self.start_heading_index is not None)
             else NO_HEADING,
             self.start_speed_index if self.speed_aware else 0,
+            0,
         )
 
     def is_goal(self, state) -> bool:
@@ -293,6 +316,10 @@ class TrajectoryPlanningProblem:
         than once per successor: it depends on the node, the two ground tracks
         and the two speeds, but not on the level offset.
         """
+        if self.temporal_aware:
+            yield from self._successors_temporal(state)
+            return
+
         spec = self.airspace.spec
         table = self.turn_table
         node = cell_of(state)
@@ -303,10 +330,6 @@ class TrajectoryPlanningProblem:
         in_unit = table.track_unit(in_index) if in_index != NO_HEADING else None
         leg_in = table.length_nm[in_index] if in_index != NO_HEADING else 0.0
         speed_in = state.isp if speed_aware else None
-        # Speeds legal at the node's own level; the transition's other endpoint
-        # level is checked inside `CostModel.evaluate`, which is what makes a
-        # level change to an altitude the speed is not legal at infeasible
-        # rather than silently reinterpreted.
         speed_options: tuple[int | None, ...] = (
             self.cost_model.available_speed_indices(state.il)
             if speed_aware
@@ -363,9 +386,6 @@ class TrajectoryPlanningProblem:
                 if self.airspace.is_blocked(candidate):
                     continue
                 for speed_out in speed_options:
-                    # No horizontal displacement, so no corner: the heading is
-                    # carried through unchanged and nothing is charged.  The
-                    # speed may still change, and it still sets the fuel flow.
                     cost, metrics = self.cost_model.transition_cost_with_turn(
                         node, candidate, NO_TURN, speed_out
                     )
@@ -377,6 +397,127 @@ class TrajectoryPlanningProblem:
                                 nl,
                                 in_index,
                                 speed_out if speed_out is not None else 0,
+                            ),
+                            cost,
+                            metrics,
+                        )
+
+    def _successors_temporal(
+        self, state: FlightState
+    ) -> Iterable[Transition[FlightState]]:
+        """Dynamic temporal mode: only bucketed time advances the state.
+
+        This milestone does not add waiting actions or alter the physical cost
+        model; it only evaluates dynamic traversal duration for horizontal
+        transitions and records the resulting integer bucket advance in the state.
+        """
+        if self.temporal_config is None or self.dynamic_wind is None:
+            raise ValueError("temporal mode requires both temporal_config and dynamic_wind")
+
+        spec = self.airspace.spec
+        table = self.turn_table
+        node = cell_of(state)
+        heading_aware = self.heading_aware
+        speed_aware = self.speed_aware
+
+        in_index = state.ih if heading_aware else NO_HEADING
+        in_unit = table.track_unit(in_index) if in_index != NO_HEADING else None
+        leg_in = table.length_nm[in_index] if in_index != NO_HEADING else 0.0
+        speed_in = state.isp if speed_aware else None
+        speed_options: tuple[int | None, ...] = (
+            self.cost_model.available_speed_indices(state.il)
+            if speed_aware
+            else (None,)
+        )
+
+        for mi, (dx, dy) in enumerate(spec.moves):
+            nx, ny = state.ix + dx, state.iy + dy
+            if not (0 <= nx < spec.cells_x and 0 <= ny < spec.cells_y):
+                continue
+            out_unit = table.track_unit(mi)
+            leg_out = table.length_nm[mi]
+            for speed_out in speed_options:
+                turn = self.cost_model.turn_metrics(
+                    node,
+                    in_unit,
+                    out_unit,
+                    leg_in,
+                    leg_out,
+                    speed_index_in=speed_in,
+                    speed_index_out=speed_out,
+                )
+                if not turn.feasible:
+                    continue
+                for dl in self._level_offsets:
+                    nl = state.il + dl
+                    if not (0 <= nl < spec.num_levels):
+                        continue
+                    candidate = GridState(nx, ny, nl)
+                    if self.airspace.is_blocked(candidate):
+                        continue
+                    cost, metrics = self.cost_model.transition_cost_with_turn(
+                        node, candidate, turn, speed_out
+                    )
+                    if not metrics.feasible:
+                        continue
+                    mid_x = self.airspace.spec.centre_nm(node).x + 0.5 * (dx * self.airspace.spec.cell_size_nm)
+                    mid_y = self.airspace.spec.centre_nm(node).y + 0.5 * (dy * self.airspace.spec.cell_size_nm)
+                    start_alt = self.airspace.spec.altitude_ft(state.il)
+                    end_alt = self.airspace.spec.altitude_ft(nl)
+                    mid_altitude = 0.5 * (start_alt + end_alt)
+                    tas_kt = (
+                        self.cost_model.speed_tas_kt(speed_out)
+                        if speed_out is not None
+                        else self.cost_model.speed_tas_kt(self.cost_model.default_speed_index)
+                    )
+                    travel = solve_modeled_traversal_duration(
+                        self.dynamic_wind,
+                        distance_nm=table.length_nm[mi],
+                        track_unit=out_unit,
+                        tas_kt=tas_kt,
+                        departure_time_h=self.temporal_config.time_at_bucket(state.k),
+                        x_mid_nm=mid_x,
+                        y_mid_nm=mid_y,
+                        altitude_ft=mid_altitude,
+                        temporal_cfg=self.temporal_config,
+                    )
+                    if travel.rejected:
+                        continue
+                    k_next = state.k + travel.bucket_count
+                    yield Transition(
+                        FlightState(
+                            nx,
+                            ny,
+                            nl,
+                            mi if heading_aware else NO_HEADING,
+                            speed_out if speed_out is not None else 0,
+                            k_next,
+                        ),
+                        cost,
+                        metrics,
+                    )
+
+        if self.allow_pure_level_change:
+            for dl in (1, -1):
+                nl = state.il + dl
+                if not (0 <= nl < spec.num_levels):
+                    continue
+                candidate = GridState(state.ix, state.iy, nl)
+                if self.airspace.is_blocked(candidate):
+                    continue
+                for speed_out in speed_options:
+                    cost, metrics = self.cost_model.transition_cost_with_turn(
+                        node, candidate, NO_TURN, speed_out
+                    )
+                    if metrics.feasible:
+                        yield Transition(
+                            FlightState(
+                                state.ix,
+                                state.iy,
+                                nl,
+                                in_index,
+                                speed_out if speed_out is not None else 0,
+                                state.k,
                             ),
                             cost,
                             metrics,
