@@ -77,6 +77,8 @@ def _build_problem(
     speeds_kt: tuple[float, ...],
     turn_model: str,
     dynamic: bool,
+    start: tuple[int, int, int] = (0, 0, 0),
+    goal: tuple[int, int, int] | None = None,
 ) -> TrajectoryPlanningProblem:
     grid = GridSpec(
         cells_x=cells,
@@ -113,11 +115,12 @@ def _build_problem(
             ),
             "dynamic_wind": _wind(amplitude_kt, period_h),
         }
+    goal = goal or (cells - 1, cells - 1, 0)
     return TrajectoryPlanningProblem(
         airspace,
         cost_model,
-        GridState(0, 0, 0),
-        GoalSpec(GridState(cells - 1, cells - 1, 0)),
+        GridState(*start),
+        GoalSpec(GridState(*goal)),
         **kwargs,
     )
 
@@ -130,14 +133,17 @@ def _run_static_regression(
     turn_model: str,
     seed: int,
     max_expansions: int | None,
+    start: tuple[int, int, int] = (0, 0, 0),
+    goal: tuple[int, int, int] | None = None,
+    include_path: bool = False,
 ) -> dict[str, object]:
     scenario = get_scenario("empty-cruise")
     scenario = replace(
         scenario,
         name=name,
         grid=replace(scenario.grid, cells_x=cells, cells_y=cells),
-        start=[0, 0, 0],
-        goal=[cells - 1, cells - 1, 0],
+        start=list(start),
+        goal=list(goal or (cells - 1, cells - 1, 0)),
         turn_model=turn_model,
         speed_envelope={
             "planning_tas_kt": list(sorted(speeds_kt)),
@@ -156,7 +162,7 @@ def _run_static_regression(
     evaluation = report.evaluation
     path = report.path
     final_state = path[-1] if solved and path else None
-    return {
+    record = {
         "family": "STATIC_REGRESSION",
         "scenario_name": name,
         "mode": "static",
@@ -192,6 +198,9 @@ def _run_static_regression(
             "flight_levels": list(scenario.grid.flight_levels),
         },
     }
+    if include_path:
+        record["path"] = [tuple(state) for state in path]
+    return record
 
 
 def _search(
@@ -236,6 +245,9 @@ def run_dynamic_experiment(
     seed: int = 0,
     max_expansions: int | None = None,
     family: str = "MATRIX",
+    start: tuple[int, int, int] = (0, 0, 0),
+    goal: tuple[int, int, int] | None = None,
+    include_path: bool = False,
 ) -> dict[str, object]:
     """Run one experiment and return a stable result record."""
     if mode not in {"static", "dynamic"}:
@@ -252,6 +264,9 @@ def run_dynamic_experiment(
             turn_model=turn_model,
             seed=seed,
             max_expansions=max_expansions,
+            start=start,
+            goal=goal,
+            include_path=include_path,
         )
     dynamic = mode == "dynamic"
     problem = _build_problem(
@@ -262,6 +277,8 @@ def run_dynamic_experiment(
         speeds_kt=speeds_kt,
         turn_model=turn_model,
         dynamic=dynamic,
+        start=start,
+        goal=goal,
     )
     result = _search(
         problem,
@@ -279,7 +296,7 @@ def run_dynamic_experiment(
         if dynamic and final_bucket is not None
         else evaluation.time_h if solved else None
     )
-    return {
+    record = {
         "family": family,
         "scenario_name": name,
         "mode": mode,
@@ -315,6 +332,9 @@ def run_dynamic_experiment(
             "flight_levels": list(problem.airspace.spec.flight_levels),
         },
     }
+    if include_path:
+        record["path"] = [tuple(state) for state in path]
+    return record
 
 
 def iter_dynamic_experiments(spec: DynamicExperimentSpec) -> Iterable[dict[str, object]]:

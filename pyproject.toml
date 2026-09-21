@@ -21,10 +21,14 @@ classifiers = [
 ]
 # The core library is intentionally dependency-free: it must be importable and
 # testable without a scientific stack.
-dependencies = []
+dependencies = [
+    "fastapi>=0.110,<0.116",
+    "pydantic>=2.0",
+    "uvicorn>=0.29",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "httpx>=0.27", "anyio>=3.7,<5"]
 
 [project.scripts]
 atp = "atp.cli:main"

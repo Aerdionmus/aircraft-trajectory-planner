@@ -1,5 +1,32 @@
 # Aircraft Trajectory Planner
 
+## Local JSON API
+
+M5.1 provides a backend-only presentation interface for research and educational
+use; it is not certified operational aviation software. Install the project
+dependencies, then start the development server with:
+
+```bash
+python -m atp.api
+```
+
+The development API accepts `ATP_API_ORIGINS` as a comma-separated CORS origin
+setting. Endpoints include:
+
+- `GET /api/health`
+- `GET /api/scenarios`
+- `GET /api/scenarios/{scenario_name}`
+- `POST /api/plan`
+- `POST /api/experiments/run`
+- `GET /api/experiments/config`
+
+Example plan request:
+
+```json
+{"mode": "dynamic", "algorithm": "astar", "heuristic": "dynamic-optimistic",
+ "cells": 3, "temporal_resolution_h": 0.5}
+```
+
 ## Overview
 
 Aircraft trajectory planning is a constrained path-planning problem in which a feasible route must be determined between an origin and a destination while accounting for environmental conditions, operational constraints, flight time, and estimated fuel consumption.
