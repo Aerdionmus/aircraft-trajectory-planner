@@ -27,6 +27,26 @@ Example plan request:
  "cells": 3, "temporal_resolution_h": 0.5}
 ```
 
+## CesiumJS frontend
+
+The M5.2.1 frontend is a TypeScript/Vite/CesiumJS research visualization. Run
+the backend and frontend in separate terminals:
+
+```bash
+python -m atp.api
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend uses `VITE_API_BASE_URL` for the API origin and defaults to
+`http://127.0.0.1:8000`. Trajectories are displayed in a clearly labelled
+synthetic local ENU-like coordinate system: planner grid cells are nautical
+miles east/north of a synthetic reference point, and altitude comes from the
+API trajectory. This is an educational visualization, not an operational or
+certified flight-planning system. Cesium ion credentials are not required for
+the ellipsoid-only globe used here.
+
 ## Overview
 
 Aircraft trajectory planning is a constrained path-planning problem in which a feasible route must be determined between an origin and a destination while accounting for environmental conditions, operational constraints, flight time, and estimated fuel consumption.

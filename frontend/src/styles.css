@@ -1,0 +1,36 @@
+:root {
+  color: #d8e7f0;
+  background: #07131c;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; height: 100%; margin: 0; }
+body { overflow: hidden; }
+
+.shell { display: grid; grid-template-columns: 290px 1fr 270px; height: 100%; }
+.panel { background: #0d202c; padding: 20px; overflow: auto; border-color: #1d3b4a; }
+.panel-left { border-right: 1px solid #1d3b4a; }
+.panel-right { border-left: 1px solid #1d3b4a; }
+h1 { font-size: 18px; letter-spacing: .08em; margin: 0 0 6px; }
+h2 { font-size: 12px; color: #70c9d9; letter-spacing: .12em; margin: 24px 0 12px; }
+.eyebrow, .subtle { color: #7d9aa8; font-size: 11px; }
+.field { display: grid; gap: 5px; margin: 10px 0; }
+label { color: #a8c3cf; font-size: 12px; }
+select, input, button { width: 100%; border: 1px solid #2d586a; border-radius: 3px; padding: 8px; background: #102b39; color: #e9f7fb; }
+button { background: #087f9c; border-color: #35c8df; font-weight: 700; letter-spacing: .05em; cursor: pointer; margin-top: 12px; }
+button:disabled { opacity: .5; cursor: wait; }
+.viewer { position: relative; min-width: 0; }
+#cesium-container { width: 100%; height: 100%; }
+.badge { position: absolute; top: 14px; left: 14px; padding: 7px 10px; background: #07131cdd; border: 1px solid #356171; color: #9de3ee; z-index: 2; }
+.status { margin-top: 12px; color: #ffcb6b; min-height: 18px; }
+.metric { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid #193847; }
+.metric span:first-child { color: #87a7b3; }
+.metric span:last-child { text-align: right; color: #e6f6fa; }
+.error { color: #ff8f8f; }
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  .shell { grid-template-columns: 1fr; grid-template-rows: auto 55vh auto; height: auto; min-height: 100%; }
+  .panel-left, .panel-right { border: 0; }
+}
