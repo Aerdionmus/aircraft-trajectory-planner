@@ -23,6 +23,7 @@ classifiers = [
 # testable without a scientific stack.
 dependencies = [
     "fastapi>=0.110,<0.116",
+    "openap>=2.6,<3",
     "pydantic>=2.0",
     "uvicorn>=0.29",
 ]
