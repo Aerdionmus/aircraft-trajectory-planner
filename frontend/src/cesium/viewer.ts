@@ -22,6 +22,6 @@ export function createViewer(container: HTMLElement): Viewer {
 
 export function setInitialCamera(viewer: Viewer): void {
   viewer.camera.setView({
-    destination: Cartesian3.fromDegrees(-30, 35, 1_500_000)
+    destination: Cartesian3.fromDegrees(78, 20, 4_500_000)
   });
 }

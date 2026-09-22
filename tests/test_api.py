@@ -31,6 +31,18 @@ def test_health_and_scenario_endpoints(client: TestClient):
     assert {"grid", "start", "goal", "aircraft"} <= detail.json().keys()
 
 
+def test_cors_allows_current_frontend_dev_origin(client: TestClient):
+    response = client.options(
+        "/api/scenarios",
+        headers={
+            "Origin": "http://127.0.0.1:4173",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:4173"
+
+
 @pytest.mark.parametrize("algorithm", ["dijkstra", "astar"])
 def test_static_plan_has_frontend_safe_trajectory(
     client: TestClient, algorithm: str

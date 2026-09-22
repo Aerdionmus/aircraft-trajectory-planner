@@ -1,0 +1,8 @@
+icao,iata,name,municipality,country,latitude_deg,longitude_deg,elevation_ft,airport_type,source,source_url,source_date
+VOMM,MAA,Chennai International Airport,Chennai,IN,12.990,80.1696,52,large_airport,OurAirports,https://ourairports.com/data/airports.csv,2025-01-01
+VABB,BOM,Chhatrapati Shivaji Maharaj International Airport,Mumbai,IN,19.0896,72.8656,39,large_airport,OurAirports,https://ourairports.com/data/airports.csv,2025-01-01
+VIDP,DEL,Indira Gandhi International Airport,Delhi,IN,28.5665,77.1031,777,large_airport,OurAirports,https://ourairports.com/data/airports.csv,2025-01-01
+VOBL,BLR,Kempegowda International Airport,Bengaluru,IN,13.1989,77.7063,3000,large_airport,OurAirports,https://ourairports.com/data/airports.csv,2025-01-01
+LFPG,CDG,Charles de Gaulle International Airport,Paris,FR,49.0097,2.5479,392,large_airport,OurAirports,https://ourairports.com/data/airports.csv,2025-01-01
+LFPO,ORY,Paris Orly Airport,Paris,FR,48.7262,2.3652,291,large_airport,OurAirports,https://ourairports.com/data/airports.csv,2025-01-01
+EGLL,LHR,London Heathrow Airport,London,GB,51.4700,-0.4543,83,large_airport,OurAirports,https://ourairports.com/data/airports.csv,2025-01-01

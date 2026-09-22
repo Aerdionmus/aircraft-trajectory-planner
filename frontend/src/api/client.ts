@@ -1,8 +1,11 @@
 import type {
   ApiError,
   HealthResponse,
+  ExperimentRequest,
+  ExperimentResponse,
   PlanRequest,
   PlanResponse,
+  Airport,
   ScenarioDetail,
   ScenarioSummary
 } from "../types/api";
@@ -35,10 +38,16 @@ export const api = {
   getHealth: () => request<HealthResponse>("/api/health"),
   getScenarios: () => request<ScenarioSummary[]>("/api/scenarios"),
   getScenario: (name: string) => request<ScenarioDetail>(`/api/scenarios/${encodeURIComponent(name)}`),
+  getAirports: () => request<Airport[]>("/api/airports"),
   plan: (planRequest: PlanRequest) =>
     request<PlanResponse>("/api/plan", {
       method: "POST",
       body: JSON.stringify(planRequest)
+    }),
+  runExperiment: (experimentRequest: ExperimentRequest) =>
+    request<ExperimentResponse>("/api/experiments/run", {
+      method: "POST",
+      body: JSON.stringify(experimentRequest)
     })
 };
 

@@ -14,6 +14,9 @@ class PlanRequest(BaseModel):
     scenario: str | None = None
     start: tuple[int, int, int] | None = None
     goal: tuple[int, int, int] | None = None
+    start_airport: str | None = None
+    goal_airport: str | None = None
+    reference_airport: str | None = None
     mode: Literal["static", "dynamic"] = "static"
     algorithm: Literal["astar", "dijkstra"] = "astar"
     heuristic: Literal["zero", "dynamic-optimistic"] = "zero"
@@ -24,6 +27,9 @@ class PlanRequest(BaseModel):
     wind_period_h: float = Field(default=4.0, gt=0)
     cells: int = Field(default=3, ge=2)
     max_expansions: int | None = Field(default=None, gt=0)
+    aircraft_source: Literal["synthetic", "openap"] = "synthetic"
+    aircraft_model: str | None = None
+    weather_source: Literal["synthetic", "snapshot"] = "synthetic"
 
     @model_validator(mode="after")
     def validate_combination(self) -> "PlanRequest":
@@ -31,6 +37,11 @@ class PlanRequest(BaseModel):
             raise ValueError("dijkstra requires the zero heuristic")
         if self.mode == "static" and self.heuristic == "dynamic-optimistic":
             raise ValueError("dynamic-optimistic requires dynamic mode")
+        if self.start_airport is not None or self.goal_airport is not None:
+            if self.start_airport is None or self.goal_airport is None:
+                raise ValueError("start_airport and goal_airport must be provided together")
+            if self.start is not None or self.goal is not None:
+                raise ValueError("use either integer grid coordinates or airport codes, not both")
         if self.speed_set_kt is not None:
             if not self.speed_set_kt or any(speed <= 0 for speed in self.speed_set_kt):
                 raise ValueError("speed_set_kt must contain positive speeds")
@@ -38,6 +49,10 @@ class PlanRequest(BaseModel):
                 raise ValueError("speed_set_kt must not contain duplicates")
         if self.turn_model not in TURN_MODELS:
             raise ValueError(f"unknown turn model {self.turn_model!r}")
+        if self.aircraft_source == "openap" and not self.aircraft_model:
+            raise ValueError("aircraft_model is required when aircraft_source is openap")
+        if self.aircraft_source == "synthetic" and self.aircraft_model is not None:
+            raise ValueError("aircraft_model is only valid with aircraft_source openap")
         return self
 
 

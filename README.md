@@ -39,6 +39,17 @@ npm install
 npm run dev
 ```
 
+For one-command local development with automatic cleanup on `Ctrl+C`, run from
+the repository root:
+
+```bash
+./scripts/run-dev.sh
+```
+
+This launcher tracks only the backend and frontend processes it starts. It does
+not terminate unrelated processes that may already be using ports 8000 or
+5173.
+
 The frontend uses `VITE_API_BASE_URL` for the API origin and defaults to
 `http://127.0.0.1:8000`. Trajectories are displayed in a clearly labelled
 synthetic local ENU-like coordinate system: planner grid cells are nautical
@@ -46,6 +57,33 @@ miles east/north of a synthetic reference point, and altitude comes from the
 API trajectory. This is an educational visualization, not an operational or
 certified flight-planning system. Cesium ion credentials are not required for
 the ellipsoid-only globe used here.
+
+## Real-airport grounding (backend adapter)
+
+The library now includes a backend-owned airport layer and a local WGS84 tangent
+plane adapter that preserves the planner's existing planar search semantics. The
+planner still operates in local nautical-mile coordinates; airport records are
+translated to that local frame before search, and the resulting path is then
+converted back into geodetic coordinates for any geospatial overlay work. This
+keeps the search algorithm unchanged while making the map display geographically
+meaningful for real-airport pairs such as `VOMM` -> `VABB` or `LFPG` -> `LFPO`.
+
+The data layer is intentionally documented and deterministic:
+
+- source: OurAirports public airport database
+- source URL: `https://ourairports.com/data/airports.csv`
+- ingestion date: `2025-01-01`
+- required fields: `icao`, `iata`, `name`, `municipality`, `country`,
+  `latitude_deg`, `longitude_deg`, `elevation_ft`, `airport_type`
+- normalization assumptions: ICAO and IATA are upper-cased; missing optional
+  values remain `None`; local tangent-plane transforms are only used around a
+  chosen reference anchor and never rewrite the planner itself
+
+The frontend analytics section uses Plotly.js for dynamic flight-profile
+charts (altitude, TAS, heading, and mission time), exact API performance
+metrics, and measurable experiment comparisons. Static routes intentionally
+show no fabricated time series. These charts are for research and educational
+analysis, not operational aviation analysis or certification.
 
 ## Overview
 

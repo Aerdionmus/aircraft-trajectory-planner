@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..aircraft.envelope import SpeedEnvelope
-from ..aircraft.performance import MEDIUM_TWIN_JET
+from ..aircraft.performance import AircraftPerformance, MEDIUM_TWIN_JET
 from ..core.geometry import Vec2
 from ..core.temporal import TemporalConfig
 from ..environment.airspace import Airspace, GridSpec, GridState
@@ -79,20 +79,29 @@ def _build_problem(
     dynamic: bool,
     start: tuple[int, int, int] = (0, 0, 0),
     goal: tuple[int, int, int] | None = None,
+    aircraft: AircraftPerformance = MEDIUM_TWIN_JET,
+    dynamic_wind: DynamicWindField | None = None,
+    flight_levels: tuple[int, ...] = (300,),
+    cell_size_nm: float = 10.0,
+    goal_match_level: bool = False,
 ) -> TrajectoryPlanningProblem:
     grid = GridSpec(
         cells_x=cells,
         cells_y=cells,
-        cell_size_nm=10.0,
-        flight_levels=(300,),
+        cell_size_nm=cell_size_nm,
+        flight_levels=flight_levels,
         connectivity=8,
     )
     airspace = Airspace(spec=grid)
     aircraft = replace(
-        MEDIUM_TWIN_JET,
+        aircraft,
         speed_envelope=SpeedEnvelope(
             planning_tas_kt=tuple(sorted(speeds_kt)),
             cruise_tas_kt=min(speeds_kt, key=lambda speed: (abs(speed - 330.0), speed)),
+            min_cas_kt=aircraft.envelope.min_cas_kt,
+            max_cas_kt=aircraft.envelope.max_cas_kt,
+            max_mach=aircraft.envelope.max_mach,
+            name=aircraft.envelope.name,
         ),
     )
     from ..planning.cost import CostModel, CostWeights
@@ -113,14 +122,14 @@ def _build_problem(
             "temporal_config": TemporalConfig(
                 time_origin_h=0.0, time_step_h=time_step_h
             ),
-            "dynamic_wind": _wind(amplitude_kt, period_h),
+            "dynamic_wind": dynamic_wind or _wind(amplitude_kt, period_h),
         }
     goal = goal or (cells - 1, cells - 1, 0)
     return TrajectoryPlanningProblem(
         airspace,
         cost_model,
         GridState(*start),
-        GoalSpec(GridState(*goal)),
+        GoalSpec(GridState(*goal), match_level=goal_match_level),
         **kwargs,
     )
 
@@ -136,6 +145,10 @@ def _run_static_regression(
     start: tuple[int, int, int] = (0, 0, 0),
     goal: tuple[int, int, int] | None = None,
     include_path: bool = False,
+    aircraft: AircraftPerformance = MEDIUM_TWIN_JET,
+    dynamic_wind: DynamicWindField | None = None,
+    flight_levels: tuple[int, ...] = (300,),
+    cell_size_nm: float = 10.0,
 ) -> dict[str, object]:
     scenario = get_scenario("empty-cruise")
     scenario = replace(
@@ -248,6 +261,11 @@ def run_dynamic_experiment(
     start: tuple[int, int, int] = (0, 0, 0),
     goal: tuple[int, int, int] | None = None,
     include_path: bool = False,
+    aircraft: AircraftPerformance = MEDIUM_TWIN_JET,
+    dynamic_wind: DynamicWindField | None = None,
+    flight_levels: tuple[int, ...] = (300,),
+    cell_size_nm: float = 10.0,
+    goal_match_level: bool = False,
 ) -> dict[str, object]:
     """Run one experiment and return a stable result record."""
     if mode not in {"static", "dynamic"}:
@@ -279,6 +297,11 @@ def run_dynamic_experiment(
         dynamic=dynamic,
         start=start,
         goal=goal,
+        aircraft=aircraft,
+        dynamic_wind=dynamic_wind,
+        flight_levels=flight_levels,
+        cell_size_nm=cell_size_nm,
+        goal_match_level=goal_match_level,
     )
     result = _search(
         problem,

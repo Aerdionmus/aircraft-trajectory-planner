@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Callable
 
 from ..core.units import FT_PER_FLIGHT_LEVEL
 from .envelope import SpeedEnvelope
@@ -88,6 +89,13 @@ class AircraftPerformance:
     #: ``[0, 1)``; ``0`` gives a pure parasite ``V^3`` law with no low-speed
     #: rise.  Synthetic, like every other coefficient here.
     induced_power_fraction: float = 0.25
+    #: Optional provider-owned fuel model.  Synthetic aircraft leave this unset;
+    #: provider-backed aircraft use it instead of the synthetic power curve.
+    fuel_flow_model: Callable[[float, float], float] | None = None
+    performance_source: str = "synthetic"
+    performance_model: str | None = None
+    mass_kg: float | None = None
+    fuel_capacity_kg: float | None = None
 
     def __post_init__(self) -> None:
         if self.cruise_tas_kt <= 0:
@@ -220,6 +228,15 @@ class AircraftPerformance:
         ``tas_kt=None`` means the aircraft's own cruise TAS, which reproduces the
         Milestone 1/2 value exactly.
         """
+        if self.fuel_flow_model is not None:
+            return max(
+                0.0,
+                float(
+                    self.fuel_flow_model(
+                        altitude_ft, self.tas_kt(altitude_ft) if tas_kt is None else tas_kt
+                    )
+                ),
+            )
         delta_1000ft = (altitude_ft - self.reference_altitude_ft) / 1000.0
         flow = self.cruise_fuel_flow_kg_per_h * (
             1.0 + self.fuel_flow_gradient_per_1000ft * delta_1000ft

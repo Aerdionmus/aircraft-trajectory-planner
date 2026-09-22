@@ -38,6 +38,17 @@ export function syntheticCartesian(
   return Matrix4.multiplyByPoint(enu, local, new Cartesian3());
 }
 
+export function geographicCartesian(point: TrajectoryPoint): Cartesian3 {
+  if (point.latitude_deg === undefined || point.longitude_deg === undefined) {
+    throw new Error("Geographic trajectory point is missing latitude/longitude");
+  }
+  return Cartesian3.fromDegrees(
+    point.longitude_deg,
+    point.latitude_deg,
+    point.altitude_ft * FT_TO_METERS
+  );
+}
+
 export function renderTrajectory(
   viewer: Viewer,
   trajectory: TrajectoryPoint[],
@@ -56,30 +67,46 @@ export function renderTrajectory(
     return;
   }
 
-  const positions = trajectory.map((point) => syntheticCartesian(point));
+  const positions = trajectory.map((point) =>
+    result.geographic ? geographicCartesian(point) : syntheticCartesian(point)
+  );
+  const markerPositions = result.geographic && result.airports
+    ? [
+        Cartesian3.fromDegrees(
+          result.airports.origin.longitude_deg,
+          result.airports.origin.latitude_deg,
+          (result.airports.origin.elevation_ft ?? 0) * FT_TO_METERS
+        ),
+        Cartesian3.fromDegrees(
+          result.airports.destination.longitude_deg,
+          result.airports.destination.latitude_deg,
+          (result.airports.destination.elevation_ft ?? 0) * FT_TO_METERS
+        )
+      ]
+    : [positions[0], positions[positions.length - 1]];
   const markers = viewer.scene.primitives.add(
     new PointPrimitiveCollection()
   );
   activeMarkers = markers;
-  markers.add({ position: positions[0], color: Color.LIME, pixelSize: 12 });
+  markers.add({ position: markerPositions[0], color: Color.LIME, pixelSize: 12 });
   markers.add({
-    position: positions[positions.length - 1],
+    position: markerPositions[1],
     color: Color.ORANGE,
     pixelSize: 12
   });
   viewer.entities.add({
-    position: positions[0],
+    position: markerPositions[0],
     label: {
-      text: "ORIGIN",
+      text: result.airports?.origin.icao ?? "ORIGIN",
       fillColor: Color.LIME,
       style: LabelStyle.FILL,
       pixelOffset: new Cartesian3(0, -18, 0)
     }
   });
   viewer.entities.add({
-    position: positions[positions.length - 1],
+    position: markerPositions[1],
     label: {
-      text: "DESTINATION",
+      text: result.airports?.destination.icao ?? "DESTINATION",
       fillColor: Color.ORANGE,
       style: LabelStyle.FILL,
       pixelOffset: new Cartesian3(0, -18, 0)
@@ -262,6 +289,10 @@ class Playback {
       this.windGlyphs.forEach((glyph) => { glyph.show = false; });
       return;
     }
+    if (this.result.geographic) {
+      this.windGlyphs.forEach((glyph) => { glyph.show = false; });
+      return;
+    }
     const grid = this.result.grid;
     const altitudeFt = grid.flight_levels[0];
     const centerX = 20;
@@ -289,7 +320,14 @@ class Playback {
           heading_deg: null,
           speed_tas_kt: null,
           time_h: null,
-          time_bucket: null
+          time_bucket: null,
+          flight_phase: null,
+          ground_speed_kt: null,
+          fuel_flow_kg_h: null,
+          fuel_remaining_kg: null,
+          mass_kg: null,
+          wind_speed_kt: null,
+          wind_direction_deg: null
         });
         const head = syntheticCartesian({
           x: xNm + directionX * scale,
@@ -298,7 +336,14 @@ class Playback {
           heading_deg: null,
           speed_tas_kt: null,
           time_h: null,
-          time_bucket: null
+          time_bucket: null,
+          flight_phase: null,
+          ground_speed_kt: null,
+          fuel_flow_kg_h: null,
+          fuel_remaining_kg: null,
+          mass_kg: null,
+          wind_speed_kt: null,
+          wind_direction_deg: null
         });
         const glyph = this.windGlyphs[glyphIndex++];
         glyph.show = true;

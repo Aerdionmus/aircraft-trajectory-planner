@@ -21,9 +21,17 @@ def create_app() -> FastAPI:
         description="Research/educational trajectory-planning interface; not for operational use.",
         version="0.1.0",
     )
+    default_origins = (
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:5174,"
+        "http://localhost:4173,"
+        "http://127.0.0.1:4173"
+    )
     origins = [
         origin.strip()
-        for origin in os.getenv("ATP_API_ORIGINS", "http://localhost:5173").split(",")
+        for origin in os.getenv("ATP_API_ORIGINS", default_origins).split(",")
         if origin.strip()
     ]
     app.add_middleware(

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from .models import ExperimentRequest, PlanRequest
 from .services import (
+    airport_detail,
+    airports,
     list_scenarios,
     plan,
     run_experiment,
     scenario_detail,
 )
+from ..aircraft.openap import OpenAPAdapterError
 
 router = APIRouter(prefix="/api")
 
@@ -30,9 +33,25 @@ def scenario(scenario_name: str) -> dict[str, object]:
     return scenario_detail(scenario_name)
 
 
+@router.get("/airports")
+def airport_catalog() -> list[dict[str, object]]:
+    return airports()
+
+
+@router.get("/airports/{query}")
+def airport_lookup(query: str) -> dict[str, object]:
+    return airport_detail(query)
+
+
 @router.post("/plan")
 def create_plan(request: PlanRequest) -> dict[str, object]:
-    return plan(request)
+    try:
+        return plan(request)
+    except OpenAPAdapterError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "unsupported_aircraft_provider", "message": str(error)},
+        ) from error
 
 
 @router.post("/experiments/run")
@@ -55,4 +74,3 @@ def experiment_config() -> dict[str, object]:
         ],
         "defaults": ExperimentRequest().model_dump(),
     }
-
